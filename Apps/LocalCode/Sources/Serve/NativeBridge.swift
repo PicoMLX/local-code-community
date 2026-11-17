@@ -7,6 +7,8 @@ import NNC
 public typealias PicoLocalCodeEventCallback =
   @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
 
+/// The version of `pico_local_code_generate_v1`'s contract. The token-level entry points at the
+/// end of this file carry their own version in their names; a loader finds them by symbol.
 @_cdecl("pico_local_code_abi_version")
 public func picoLocalCodeABIVersion() -> Int32 { 1 }
 
@@ -90,7 +92,7 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
   private let lock = NSLock()
   private var session: Session?
 
-  private struct Files: Equatable {
+  fileprivate struct Files: Equatable {
     let checkpoint: String
     let engram: String
     let drafter: String?
@@ -222,5 +224,174 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
     }
     return transport.isDisconnected ? 1 : 2
   }
+}
+
+// MARK: - Token-level entry points
+
+/// Receives generated token IDs, borrowed for the duration of the call. A call with no tokens
+/// reports that the request is still running. Return 0 to cancel the request.
+public typealias PicoLocalCodeTokenCallback =
+  @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<Int32>?, Int32) -> Int32
+
+/// One DeepSeek 4.1 model. Opening is cheap: the weights load on the first generation.
+private final class NativeTokenSession {
+  let lock = NSLock()
+  let graph = DynamicGraph()
+  let stream = StreamContext(.GPU(0))
+  var generator: DeepSeek4_1TextGenerator
+
+  init(files: NativeGenerationRuntime.Files) {
+    generator = DeepSeek4_1TextGenerator(
+      filePath: files.checkpoint, engramFilePath: files.engram, drafterFile: files.drafter)
+    graph.maxConcurrency = .limit(4)
+  }
+}
+
+private func copy(_ message: String, to buffer: UnsafeMutablePointer<CChar>?, capacity: Int32) {
+  guard let buffer, capacity > 0 else { return }
+  _ = message.withCString { strlcpy(buffer, $0, Int(capacity)) }
+}
+
+/// Returns a model handle, or nil after writing the reason to `error`. `drafter` may be nil.
+@_cdecl("pico_local_code_open_v2")
+public func picoLocalCodeOpen(
+  _ checkpoint: UnsafePointer<CChar>?, _ engram: UnsafePointer<CChar>?,
+  _ drafter: UnsafePointer<CChar>?, _ error: UnsafeMutablePointer<CChar>?, _ errorCapacity: Int32
+) -> UnsafeMutableRawPointer? {
+  var request: [String: Any] = [:]
+  request["checkpoint_path"] = checkpoint.flatMap { String(validatingCString: $0) }
+  request["engram_path"] = engram.flatMap { String(validatingCString: $0) }
+  request["drafter_path"] = drafter.flatMap { String(validatingCString: $0) }
+  do {
+    let session = NativeTokenSession(files: try NativeGenerationRuntime.Files(request))
+    return Unmanaged.passRetained(session).toOpaque()
+  } catch let failure {
+    copy(failure.localizedDescription, to: error, capacity: errorCapacity)
+    return nil
+  }
+}
+
+/// Unloads the weights. No request may be running.
+@_cdecl("pico_local_code_close_v2")
+public func picoLocalCodeClose(_ handle: UnsafeMutableRawPointer?) {
+  guard let handle else { return }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeRetainedValue()
+  session.lock.lock()
+  session.generator.unload()
+  session.lock.unlock()
+}
+
+/// The bytes the weights hold once loaded, at the tier this machine selects.
+@_cdecl("pico_local_code_resident_bytes_v2")
+public func picoLocalCodeResidentBytes(_ handle: UnsafeMutableRawPointer?) -> Int64 {
+  guard let handle else { return 0 }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
+  return Int64(clamping: session.generator.residentWeightsSize)
+}
+
+/// Writes up to `capacity` token IDs and returns how many `text` has, or -1 for invalid UTF-8.
+/// Special tokens written out in `text` become their IDs; nothing is added at either end.
+@_cdecl("pico_local_code_tokenize_v2")
+public func picoLocalCodeTokenize(
+  _ text: UnsafePointer<CChar>?, _ tokens: UnsafeMutablePointer<Int32>?, _ capacity: Int32
+) -> Int32 {
+  guard let text, let string = String(validatingCString: text) else { return -1 }
+  let (ids, _) = DeepSeek4_1TextGenerator.unsafeTokenizer.tokenize(
+    text: string, addSpecialTokens: false)
+  if let tokens {
+    for index in 0..<min(ids.count, Int(max(capacity, 0))) { tokens[index] = ids[index] }
+  }
+  return Int32(clamping: ids.count)
+}
+
+/// Writes the text as NUL-terminated UTF-8, truncated to `capacity`, and returns its length in
+/// bytes without the NUL. Call with a nil buffer first to size it.
+@_cdecl("pico_local_code_detokenize_v2")
+public func picoLocalCodeDetokenize(
+  _ tokens: UnsafePointer<Int32>?, _ count: Int32, _ text: UnsafeMutablePointer<CChar>?,
+  _ capacity: Int32
+) -> Int32 {
+  let ids = tokens.map { Array(UnsafeBufferPointer(start: $0, count: Int(max(count, 0)))) } ?? []
+  let string = DeepSeek4_1TextGenerator.unsafeTokenizer.decode(ids)
+  copy(string, to: text, capacity: capacity)
+  return Int32(clamping: string.utf8.count)
+}
+
+/// Generates from raw prompt token IDs with a fresh KV cache, calling `callback` synchronously.
+/// `maxTokens` at or below 0 leaves the limit to the context length. `deterministic` nonzero
+/// picks the most likely token; zero samples with the model's own settings.
+///
+/// `usage` receives four values: prompt tokens evaluated, tokens generated, prefill
+/// microseconds and decode microseconds.
+///
+/// Returns 0 when the model stopped, 1 when the callback cancelled, 2 for a failure and 3 when
+/// `maxTokens` or the context length ended the request.
+@_cdecl("pico_local_code_generate_tokens_v2")
+public func picoLocalCodeGenerateTokens(
+  _ handle: UnsafeMutableRawPointer?, _ prompt: UnsafePointer<Int32>?, _ promptCount: Int32,
+  _ maxTokens: Int32, _ deterministic: Int32, _ callback: PicoLocalCodeTokenCallback?,
+  _ context: UnsafeMutableRawPointer?, _ usage: UnsafeMutablePointer<Int64>?
+) -> Int32 {
+  let endOfSentence: Int32 = 1
+  let vocabularySize = Int32(DeepSeek4_1ModelConfiguration.deepSeekV4_1Flash.vocabularySize)
+  guard let handle, let prompt, promptCount > 0, let callback else { return 2 }
+  let ids = Array(UnsafeBufferPointer(start: prompt, count: Int(promptCount)))
+  guard ids.allSatisfy({ (0..<vocabularySize).contains($0) }) else { return 2 }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
+  guard session.lock.try() else { return 2 }
+  defer { session.lock.unlock() }
+
+  let limit = maxTokens > 0 ? Int(maxTokens) : Int.max
+  var delivered = 0
+  var cancelled = false
+  // Hands the callback the tokens it has not seen, up to the limit.
+  func deliver(_ generated: [Int32]) {
+    let end = min(generated.count, limit)
+    guard end > delivered, !cancelled else { return }
+    let proceed = generated[delivered..<end].withUnsafeBufferPointer {
+      callback(context, $0.baseAddress, Int32($0.count))
+    }
+    delivered = end
+    cancelled = proceed == 0
+  }
+
+  var kvCache = DeepSeek4_1TextGenerator.KVCache()
+  // A nil project path gives the generator no readable or writable context cache.
+  let contextCache = DeepSeek4_1ContextCache(
+    projectPath: nil, checkpointStride: session.generator.checkpointStride)
+  let graph = session.graph
+  let input = graph.variable(Tensor<Int32>(ids, .CPU, .C(ids.count)).toGPU(0))
+  var generated = graph.withStream(session.stream) {
+    graph.withNoGrad {
+      session.generator.decode(
+        graph: graph, tokens: input, tokenOffset: 0, thinkingBudget: 0,
+        deterministic: deterministic != 0, kvCache: &kvCache, contextTokens: ids,
+        contextCache: contextCache
+      ) { _, _, generated, _ in
+        if generated.count > delivered {
+          deliver(generated)
+        } else {
+          cancelled = callback(context, nil, 0) == 0
+        }
+        return cancelled || generated.count >= limit ? .abort : .continue
+      }
+    }
+  }
+  session.stream.joined()
+
+  let stopped = generated.last == endOfSentence
+  if stopped { generated.removeLast() }
+  deliver(generated)
+  let statistics = session.generator.lastInteractionStatistics
+  if let usage {
+    usage[0] = Int64(statistics.prefillTokensSoFar)
+    usage[1] = Int64(delivered)
+    usage[2] = Int64(statistics.prefillDurationSoFar * 1_000_000)
+    usage[3] = Int64(statistics.tokenGenerationDurationSoFar * 1_000_000)
+  }
+  if cancelled { return 1 }
+  if stopped && generated.count <= limit { return 0 }
+  // The decoder returns nothing for a prompt it cannot place in its context.
+  return generated.isEmpty ? 2 : 3
 }
 #endif

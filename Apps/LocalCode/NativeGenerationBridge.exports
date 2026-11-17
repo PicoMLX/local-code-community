@@ -1,2 +1,8 @@
 _pico_local_code_abi_version
 _pico_local_code_generate_v1
+_pico_local_code_open_v2
+_pico_local_code_close_v2
+_pico_local_code_resident_bytes_v2
+_pico_local_code_tokenize_v2
+_pico_local_code_detokenize_v2
+_pico_local_code_generate_tokens_v2
