@@ -110,6 +110,7 @@ struct ResponsesOutputParser {
   }
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 func responsesModelAdapter(for textGenerator: any TextGenerator, projectPath: String)
   -> (any ResponsesModelAdapter)?
 {
@@ -345,6 +346,8 @@ final class Qwen3_5ResponsesModelAdapter: ResponsesModelAdapter {
   }
 }
 
+#endif
+
 final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: ResponsesModelAdapter {
   private struct Scanner: ResponsesToolCallScanner {
     let format: DeepSeek4ToolCallParser.Format
@@ -368,12 +371,12 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
   private static var thinkEndToken: Int32 { 128_822 }
 
   private var textGenerator: Generator
-  private let projectPath: String
+  private let projectPath: String?
   private var kvCache = Generator.KVCache()
   var kvCacheTokenLength: Int { kvCache.tokenLength }
   private(set) var restoredTokenLength: Int?
 
-  init(textGenerator: Generator, projectPath: String) {
+  init(textGenerator: Generator, projectPath: String?) {
     self.textGenerator = textGenerator
     self.projectPath = projectPath
   }
@@ -381,7 +384,7 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
   var filePath: String { textGenerator.filePath }
   var maximumContextLength: Int { DeepSeek4CodeAgent<Generator>.maximumContextLength }
   var minimumGenerationReserve: Int { DeepSeek4CodeAgent<Generator>.minimumGenerationReserve }
-  var isImageSupported: Bool { Generator.isImageSupported }
+  var isImageSupported: Bool { projectPath != nil && Generator.isImageSupported }
 
   func prompt(
     for request: ResponsesRequest, reasoningEffort: CodeAgentReasoningEffort, isThinking: Bool
@@ -394,7 +397,7 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
           ? DeepSeek4CodeAgent<Generator>.ReasoningEffort(reasoningEffort) : .high,
         isThinking: isThinking),
       unsafeTokenizer: Generator.unsafeTokenizer, safeTokenizer: Generator.safeTokenizer)
-    let store = EmbedsFileStore(projectPath: projectPath)
+    let store = projectPath.map(EmbedsFileStore.init(projectPath:))
     var embedSpans = [EmbedSpan]()
     // When thinking, the model opens its thinking even if it closes it right away, which is what
     // its KV cache holds. Turns without thinking are written that way too, or the client's replay
@@ -402,7 +405,7 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
     let transcriptTokens = DeepSeek4CodeAgent<Generator>.parse(
       request.transcript, isThinking: isThinking
     ) { image, tokenOffset in
-      guard let digest = try? store.insert(data: image.data),
+      guard let store, let digest = try? store.insert(data: image.data),
         let count = Generator.imageTokenCount(filePath: store.filePath(for: digest))
       else { return [] }
       embedSpans.append(
@@ -510,6 +513,7 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
   }
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
   private struct Scanner: ResponsesToolCallScanner {
     var parser = GLM5_3ToolCallParser()
@@ -667,3 +671,4 @@ final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
     kvCache = GLM5_3TextGenerator.KVCache()
   }
 }
+#endif

@@ -11,7 +11,9 @@ protocol ResponsesTransport: AnyObject {
   func close()
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 extension StreamingHTTPConnection: ResponsesTransport {}
+#endif
 
 /// Input tokens include the cached ones, and output tokens the reasoning ones.
 struct ResponseUsage: Equatable {

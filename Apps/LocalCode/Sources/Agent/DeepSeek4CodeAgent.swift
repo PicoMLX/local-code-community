@@ -1,12 +1,25 @@
+#if !PICO_NATIVE_LOCAL_CODE
 import Atomics
 import BashToolContext
 import DataModels
 import Dispatch
-import Foundation
 import NNC
 import ProjectHistoryManager
 import Tokenizer
 import os.lock
+#endif
+import Foundation
+
+#if PICO_NATIVE_LOCAL_CODE
+/// The native target builds the same DeepSeek prompt codec without the app's tool runner.
+enum DeepSeek4CodeAgent<Generator: DeepSeekTextGenerator> {
+  static var maximumContextLength: Int { 512 * 1_024 }
+  static var minimumGenerationReserve: Int { 8_192 }
+  static var toolCallFormat: DeepSeek4ToolCallParser.Format {
+    DeepSeek4ToolCallParser.Format(version: Generator.version)
+  }
+}
+#endif
 
 extension DeepSeek4CodeAgent {
   public enum ReasoningEffort: Int {
@@ -73,6 +86,10 @@ extension DeepSeek4CodeAgent {
     }
   }
 
+}
+
+#if !PICO_NATIVE_LOCAL_CODE
+extension DeepSeek4CodeAgent {
   public func isCapReachedForStopping(
     from resultAtStop: CodeAgentResult, to result: CodeAgentResult
   ) -> Bool {
@@ -1403,6 +1420,8 @@ public final class DeepSeek4CodeAgent<Generator: DeepSeekTextGenerator>: CodeAge
   }
 }
 
+#endif
+
 extension DeepSeekGenerationContinuationState {
   init(_ state: ContinuationState) {
     switch state {
@@ -1418,6 +1437,7 @@ extension DeepSeekGenerationContinuationState {
   }
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 extension DeepSeek4CodeAgent {
   static func toolResultTokens(
     for toolCalls: [ToolCall], responses: [Int32: ToolResponse], tokenizer: TiktokenTokenizer,
@@ -1530,3 +1550,4 @@ extension DeepSeek4CodeAgent where Generator == DeepSeek4TextGenerator {
     }
   }
 }
+#endif

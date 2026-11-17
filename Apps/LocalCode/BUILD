@@ -1,5 +1,5 @@
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_framework")
-load("@build_bazel_rules_apple//apple:macos.bzl", "macos_command_line_application")
+load("@build_bazel_rules_apple//apple:macos.bzl", "macos_command_line_application", "macos_dylib")
 load("@build_bazel_rules_apple//apple:resources.bzl", "apple_resource_group")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_binary", "swift_library", "swift_test")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
@@ -1504,4 +1504,57 @@ swift_test(
         "@build_bazel_rules_swift//tools/test_observer",
         "@s4nnc//nnc",
     ],
+)
+
+_DEEPSEEK_NATIVE_SRCS = [
+    "Sources/Agent/DeepSeekTextGenerator.swift",
+    "Sources/Agent/TextGenerator.swift",
+    "Sources/Models/ContextCache.swift",
+    "Sources/Models/DeepSeek4ContextCache.swift",
+    "Sources/Models/DeepSeek4TextGenerator.swift",
+    "Sources/Models/DeepSeek4_1ContextCache.swift",
+    "Sources/Models/DeepSeek4_1EngramCache.swift",
+    "Sources/Models/DeepSeek4_1Image.swift",
+    "Sources/Models/DeepSeek4_1TextGenerator.swift",
+]
+
+_DEEPSEEK_NATIVE_DEPS = [
+    "//Libraries/BinaryResources",
+    "//Libraries/DataModels",
+    "//Libraries/ProjectHistoryManager",
+    "//Libraries/SwiftDiffusion",
+    "//Libraries/SwiftLLM",
+    "//Libraries/Tokenizer",
+    "@s4nnc//nnc",
+]
+
+swift_library(
+    name = "NativeGenerationBridge",
+    srcs = _DEEPSEEK_NATIVE_SRCS + [
+        "Sources/Agent/AgentTranscript.swift",
+        "Sources/Agent/CodeAgent.swift",
+        "Sources/Agent/CodeAgentReasoningEffort.swift",
+        "Sources/Agent/DeepSeek4CodeAgent.swift",
+        "Sources/Agent/DeepSeek4CodeAgent+Parse.swift",
+        "Sources/Agent/DeepSeek4ToolCallParser.swift",
+        "Sources/Agent/SystemPromptSection.swift",
+        "Sources/Agent/SystemPromptTokenization.swift",
+        "Sources/Agent/ToolCallParser.swift",
+        "Sources/Serve/NativeBridge.swift",
+        "Sources/Serve/ResponsesAgent.swift",
+        "Sources/Serve/ResponsesModelAdapter.swift",
+        "Sources/Serve/ResponsesPrompt.swift",
+        "Sources/Serve/ResponsesRequest.swift",
+        "Sources/Serve/ResponsesResponseWriter.swift",
+    ],
+    alwayslink = True,
+    defines = ["PICO_NATIVE_LOCAL_CODE"],
+    deps = _DEEPSEEK_NATIVE_DEPS + ["@swift-atomics//:SwiftAtomics"],
+)
+
+macos_dylib(
+    name = "PicoLocalCodeNative",
+    exported_symbols_lists = ["NativeGenerationBridge.exports"],
+    minimum_os_version = "27.0",
+    deps = [":NativeGenerationBridge"],
 )

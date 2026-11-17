@@ -1,5 +1,7 @@
 import Atomics
+#if !PICO_NATIVE_LOCAL_CODE
 import BashToolContext
+#endif
 import DataModels
 import Foundation
 import NNC
@@ -19,7 +21,7 @@ protocol ResponsesAgentDelegate: AnyObject {
 /// It is never the foreground agent, so the scheduler's progress callback doesn't reach anyone. The
 /// agent writes to the client itself and ends the turn itself when the client leaves. The client
 /// supplies the conversation and runs the tools, so `ask`'s prompt and project go unused.
-final class ResponsesAgent: CodeAgent {
+final class ResponsesAgent {
   /// Set before submitting a turn and read on the generation queue once the scheduler runs it.
   struct Request {
     let request: ResponsesRequest
@@ -71,8 +73,10 @@ final class ResponsesAgent: CodeAgent {
 
   weak var delegate: ResponsesAgentDelegate?
   let adapter: any ResponsesModelAdapter
+#if !PICO_NATIVE_LOCAL_CODE
   // Set on the main queue before each turn is submitted.
   var nextRequest: Request?
+#endif
 
   // The rest is accessed only on the generation queue.
   private let graph: DynamicGraph
@@ -98,6 +102,14 @@ final class ResponsesAgent: CodeAgent {
     self.activeTurnCount = activeTurnCount
   }
 
+#if PICO_NATIVE_LOCAL_CODE
+  func runSynchronously(
+    _ request: Request, progress: (CodeAgentProgress, CodeAgentStatistics) -> ContinuationState
+  ) {
+    guard start(request) else { return }
+    _ = run(progress: progress)
+  }
+#else
   // MARK: - CodeAgent members the scheduler doesn't use for this agent.
 
   let bashUserInteraction = BashUserInteraction()
@@ -147,6 +159,7 @@ final class ResponsesAgent: CodeAgent {
     unloadCaches()
     delegate?.responsesAgent(self, didUpdate: .paused)
   }
+#endif
 
   func unloadCaches() {
     streamContext.joined()
@@ -248,7 +261,9 @@ final class ResponsesAgent: CodeAgent {
     // request.
     func shouldYield() -> Bool {
       let now = Date()
-      guard now >= sliceDeadline, activeTurnCount.load(ordering: .relaxed) > 1 else { return false }
+      guard now.timeIntervalSince(sliceDeadline) >= 0,
+        activeTurnCount.load(ordering: .relaxed) > 1
+      else { return false }
       sliceDeadline = now.addingTimeInterval(timeSlice)
       return progress(.timeSliceEnded, turn.statistics) == .pause
     }
@@ -466,3 +481,7 @@ final class ResponsesAgent: CodeAgent {
     }
   }
 }
+
+#if !PICO_NATIVE_LOCAL_CODE
+extension ResponsesAgent: CodeAgent {}
+#endif

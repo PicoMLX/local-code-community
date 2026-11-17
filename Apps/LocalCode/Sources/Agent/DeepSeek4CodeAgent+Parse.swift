@@ -8,6 +8,27 @@ extension DeepSeek4CodeAgent {
   private static var transcriptThinkEndToken: Int32 { 128_822 }
   private static var transcriptSpecialTokens: [Int32: String] { [128_825: "｜DSML｜"] }
 
+  static func messageSegments(in tokens: [Int32]) -> [[Int32]] {
+    guard !tokens.isEmpty else { return [] }
+    var segments = [[Int32]]()
+    var segmentStart: Int? = nil
+    for index in tokens.indices {
+      guard tokens[index] == transcriptUserToken else { continue }
+      if let start = segmentStart {
+        segments.append(Array(tokens[start..<index]))
+      } else if index > tokens.startIndex {
+        segments.append(Array(tokens[tokens.startIndex..<index]))
+      }
+      segmentStart = index
+    }
+    if let start = segmentStart {
+      segments.append(Array(tokens[start..<tokens.endIndex]))
+    } else {
+      segments.append(tokens)
+    }
+    return segments
+  }
+
   static func parse(_ tokens: [Int32]) -> [AgentTranscriptEntry] {
     var transcript = [AgentTranscriptEntry]()
     for messageSegment in messageSegments(in: tokens) {
