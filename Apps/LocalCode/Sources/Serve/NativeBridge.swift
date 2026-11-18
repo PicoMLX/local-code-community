@@ -304,17 +304,41 @@ public func picoLocalCodeTokenize(
   return Int32(clamping: ids.count)
 }
 
-/// Writes the text as NUL-terminated UTF-8, truncated to `capacity`, and returns its length in
-/// bytes without the NUL. Call with a nil buffer first to size it.
+/// `pico_local_code_tokenize_v2` for text given as `length` bytes of UTF-8, which may hold NUL
+/// characters.
+@_cdecl("pico_local_code_tokenize_v3")
+public func picoLocalCodeTokenizeBytes(
+  _ text: UnsafePointer<UInt8>?, _ length: Int32, _ tokens: UnsafeMutablePointer<Int32>?,
+  _ capacity: Int32
+) -> Int32 {
+  guard length >= 0, text != nil || length == 0,
+    let string = String(
+      validating: UnsafeBufferPointer(start: text, count: Int(length)), as: UTF8.self)
+  else { return -1 }
+  let (ids, _) = DeepSeek4_1TextGenerator.unsafeTokenizer.tokenize(
+    text: string, addSpecialTokens: false)
+  if let tokens {
+    for index in 0..<min(ids.count, Int(max(capacity, 0))) { tokens[index] = ids[index] }
+  }
+  return Int32(clamping: ids.count)
+}
+
+/// Writes the text as UTF-8 followed by a NUL, truncated to `capacity`, and returns its length in
+/// bytes without that NUL. The text itself may hold NUL characters, so read it by the returned
+/// length. Call with a nil buffer first to size it.
 @_cdecl("pico_local_code_detokenize_v2")
 public func picoLocalCodeDetokenize(
   _ tokens: UnsafePointer<Int32>?, _ count: Int32, _ text: UnsafeMutablePointer<CChar>?,
   _ capacity: Int32
 ) -> Int32 {
   let ids = tokens.map { Array(UnsafeBufferPointer(start: $0, count: Int(max(count, 0)))) } ?? []
-  let string = DeepSeek4_1TextGenerator.unsafeTokenizer.decode(ids)
-  copy(string, to: text, capacity: capacity)
-  return Int32(clamping: string.utf8.count)
+  let bytes = Array(DeepSeek4_1TextGenerator.unsafeTokenizer.decode(ids).utf8)
+  if let text, capacity > 0 {
+    let written = min(bytes.count, Int(capacity) - 1)
+    for index in 0..<written { text[index] = CChar(bitPattern: bytes[index]) }
+    text[written] = 0
+  }
+  return Int32(clamping: bytes.count)
 }
 
 /// Generates from raw prompt token IDs with a fresh KV cache, calling `callback` synchronously.
