@@ -356,7 +356,7 @@ public func picoLocalCodeGenerateTokens(
   _ maxTokens: Int32, _ deterministic: Int32, _ callback: PicoLocalCodeTokenCallback?,
   _ context: UnsafeMutableRawPointer?, _ usage: UnsafeMutablePointer<Int64>?
 ) -> Int32 {
-  let endOfSentence: Int32 = 1
+  let endOfSentence = endOfSentenceToken
   let vocabularySize = Int32(DeepSeek4_1ModelConfiguration.deepSeekV4_1Flash.vocabularySize)
   guard let handle, let prompt, promptCount > 0, let callback else { return 2 }
   let ids = Array(UnsafeBufferPointer(start: prompt, count: Int(promptCount)))
@@ -417,5 +417,23 @@ public func picoLocalCodeGenerateTokens(
   if stopped && generated.count <= limit { return 0 }
   // The decoder returns nothing for a prompt it cannot place in its context.
   return generated.isEmpty ? 2 : 3
+}
+
+/// The one token that ends a DeepSeek 4.1 reply.
+private let endOfSentenceToken: Int32 = 1
+
+/// `pico_local_code_generate_tokens_v2` with a fifth `usage` value: the ID of the end token that
+/// stopped the reply when the result is 0, and -1 otherwise. A chat format can end a reply with
+/// more than one kind of token, so the caller is told which.
+@_cdecl("pico_local_code_generate_tokens_v3")
+public func picoLocalCodeGenerateTokensNamingStop(
+  _ handle: UnsafeMutableRawPointer?, _ prompt: UnsafePointer<Int32>?, _ promptCount: Int32,
+  _ maxTokens: Int32, _ deterministic: Int32, _ callback: PicoLocalCodeTokenCallback?,
+  _ context: UnsafeMutableRawPointer?, _ usage: UnsafeMutablePointer<Int64>?
+) -> Int32 {
+  let status = picoLocalCodeGenerateTokens(
+    handle, prompt, promptCount, maxTokens, deterministic, callback, context, usage)
+  usage?[4] = status == 0 ? Int64(endOfSentenceToken) : -1
+  return status
 }
 #endif
