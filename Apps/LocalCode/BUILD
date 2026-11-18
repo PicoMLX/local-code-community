@@ -3,6 +3,7 @@ load("@build_bazel_rules_apple//apple:macos.bzl", "macos_command_line_applicatio
 load("@build_bazel_rules_apple//apple:resources.bzl", "apple_resource_group")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_binary", "swift_library", "swift_test")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
+load(":native_build_info.bzl", "native_build_info")
 
 # local-code-community leaves out the team's provisioning profiles. Without one, simulator builds
 # still work, and device builds need a profile of your own at this path.
@@ -1552,9 +1553,17 @@ swift_library(
     deps = _DEEPSEEK_NATIVE_DEPS + ["@swift-atomics//:SwiftAtomics"],
 )
 
+native_build_info(name = "native_build_info_source")
+
+cc_library(
+    name = "NativeBuildInfo",
+    srcs = [":native_build_info_source"],
+    alwayslink = True,
+)
+
 macos_dylib(
     name = "PicoLocalCodeNative",
     exported_symbols_lists = ["NativeGenerationBridge.exports"],
     minimum_os_version = "27.0",
-    deps = [":NativeGenerationBridge"],
+    deps = [":NativeBuildInfo", ":NativeGenerationBridge"],
 )
