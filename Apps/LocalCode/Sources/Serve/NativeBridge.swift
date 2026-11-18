@@ -87,6 +87,11 @@ private final class NativeResponsesTransport: ResponsesTransport {
   }
 }
 
+/// Held while any model generates, through the chat entry point or a token-level handle.
+/// Generation saves and restores process-wide graph settings, such as the queue watermark, so two
+/// generations that overlap, even on different models, can leave those settings changed.
+private let inferenceGate = NSLock()
+
 private final class NativeGenerationRuntime: @unchecked Sendable {
   static let shared = NativeGenerationRuntime()
   private let lock = NSLock()
@@ -152,10 +157,12 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
   }
 
   func generate(_ data: Data, transport: NativeResponsesTransport) -> Int32 {
-    guard lock.try() else {
+    guard inferenceGate.try() else {
       transport.fail(code: "engine_busy", message: "Local Code is already generating.")
       return 2
     }
+    defer { inferenceGate.unlock() }
+    lock.lock()
     defer { lock.unlock() }
 
     do {
@@ -323,16 +330,18 @@ public func picoLocalCodeTokenizeBytes(
   return Int32(clamping: ids.count)
 }
 
-/// Writes the text as UTF-8 followed by a NUL, truncated to `capacity`, and returns its length in
-/// bytes without that NUL. The text itself may hold NUL characters, so read it by the returned
-/// length. Call with a nil buffer first to size it.
+/// Writes the tokens' bytes followed by a NUL, truncated to `capacity`, and returns their length
+/// without that NUL. Read them by the returned length: they may hold NUL characters, and they are
+/// UTF-8 except where the tokens begin or end inside a character. A caller that decodes a reply in
+/// pieces keeps those bytes rather than losing the text around them. Call with a nil buffer first
+/// to size it.
 @_cdecl("pico_local_code_detokenize_v2")
 public func picoLocalCodeDetokenize(
   _ tokens: UnsafePointer<Int32>?, _ count: Int32, _ text: UnsafeMutablePointer<CChar>?,
   _ capacity: Int32
 ) -> Int32 {
   let ids = tokens.map { Array(UnsafeBufferPointer(start: $0, count: Int(max(count, 0)))) } ?? []
-  let bytes = Array(DeepSeek4_1TextGenerator.unsafeTokenizer.decode(ids).utf8)
+  let bytes = DeepSeek4_1TextGenerator.unsafeTokenizer.decodeBytes(ids)
   if let text, capacity > 0 {
     let written = min(bytes.count, Int(capacity) - 1)
     for index in 0..<written { text[index] = CChar(bitPattern: bytes[index]) }
@@ -350,6 +359,9 @@ public func picoLocalCodeDetokenize(
 ///
 /// Returns 0 when the model stopped, 1 when the callback cancelled, 2 for a failure and 3 when
 /// `maxTokens` or the context length ended the request.
+///
+/// One model generates at a time across the process: a call waits while another handle, or the
+/// chat entry point, is generating. A second call on the same handle while one runs fails.
 @_cdecl("pico_local_code_generate_tokens_v2")
 public func picoLocalCodeGenerateTokens(
   _ handle: UnsafeMutableRawPointer?, _ prompt: UnsafePointer<Int32>?, _ promptCount: Int32,
@@ -364,6 +376,8 @@ public func picoLocalCodeGenerateTokens(
   let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
   guard session.lock.try() else { return 2 }
   defer { session.lock.unlock() }
+  inferenceGate.lock()
+  defer { inferenceGate.unlock() }
 
   let limit = maxTokens > 0 ? Int(maxTokens) : Int.max
   var delivered = 0
