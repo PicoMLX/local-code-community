@@ -25,6 +25,9 @@ exports_files([
     "Sources/Models/GLM5_3ContextCache.swift",
     "Sources/Models/GLM5_3Image.swift",
     "Sources/Models/GLM5_3TextGenerator.swift",
+    "Sources/Models/Inkling2SmallContextCache.swift",
+    "Sources/Models/Inkling2SmallImage.swift",
+    "Sources/Models/Inkling2SmallTextGenerator.swift",
 ])
 
 xcodeproj(
@@ -84,6 +87,19 @@ apple_resource_group(
     name = "mathFontsResources",
     strip_structured_resources_prefixes = ["Resources"],
     structured_resources = glob(["Resources/mathFonts.bundle/**"]),
+)
+
+# Tiempos Text and Elena in Fonts/Licensed are licensed for the app only, so
+# SYNCLIST.local-code-community leaves them out of the public repository. Builds
+# from it bundle JetBrains Mono alone, and the font settings offer only the fonts
+# that are present.
+apple_resource_group(
+    name = "FontsResources",
+    strip_structured_resources_prefixes = ["Resources"],
+    structured_resources = glob(
+        ["Resources/Fonts/**"],
+        exclude = ["**/.DS_Store"],
+    ),
 )
 
 apple_resource_group(
@@ -170,6 +186,7 @@ ios_application(
     resources = glob(
         ["Resources/**"],
         exclude = [
+            "Resources/Fonts/**",
             "Resources/mathFonts.bundle/**",
             "Resources/NodeMobile/Runtime/**",
             "Resources/Skills/**",
@@ -180,6 +197,7 @@ ios_application(
     ) + [
         ":BrowserRuntimeResources",
         ":BuiltInSkillsResources",
+        ":FontsResources",
         ":NodeMobileRuntimeResources",
         ":mathFontsResources",
         "//Vendors/FFmpeg:notices",
@@ -700,6 +718,26 @@ swift_test(
         "//Libraries/DataModels",
         "//Libraries/ProjectHistoryManager",
         "//Libraries/SwiftDiffusion",
+        "//Libraries/SwiftLLM",
+        "//Libraries/Tokenizer",
+        "@s4nnc//nnc",
+    ],
+)
+
+swift_test(
+    name = "Inkling2SmallContextCacheTests",
+    srcs = [
+        "Sources/Agent/DeepSeekTextGenerator.swift",
+        "Sources/Agent/TextGenerator.swift",
+        "Sources/Models/ContextCache.swift",
+        "Sources/Models/Inkling2SmallContextCache.swift",
+        "Sources/Models/Inkling2SmallImage.swift",
+        "Sources/Models/Inkling2SmallTextGenerator.swift",
+    ] + glob(["Tests/Inkling2SmallContextCacheTests/**/*.swift"]),
+    deps = [
+        "//Libraries/BinaryResources",
+        "//Libraries/DataModels",
+        "//Libraries/ProjectHistoryManager",
         "//Libraries/SwiftLLM",
         "//Libraries/Tokenizer",
         "@s4nnc//nnc",
