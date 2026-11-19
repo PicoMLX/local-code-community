@@ -161,6 +161,8 @@ final class SettingsWorkflow: Workflow {
   private weak var drawThingsModelsFolderPicker: UnifiedDocumentPickerController?
   private weak var modelsFolderPicker: UnifiedDocumentPickerController?
   private weak var appDataDirectoryPicker: UnifiedDocumentPickerController?
+  private weak var permittedDirectoryPicker: UnifiedDocumentPickerController?
+  private weak var workspaceFolderPicker: UnifiedDocumentPickerController?
   private var communityTemplateWorkflow: CommunityTemplateWorkflow?
   /// The folder `appDataDirectoryPicker` asks for.
   private var requestedAppDataDirectory = AppDataDirectory.messages
@@ -2224,6 +2226,7 @@ extension SettingsWorkflow: ProjectControllerDelegate {
       currentFolder.map { URL(fileURLWithPath: $0) } ?? workspaceFolderURL
     documentPicker.allowsMultipleSelection = false
     documentPicker.delegate = self
+    workspaceFolderPicker = documentPicker
     viewController.present(documentPicker, animated: true)
   }
 
@@ -2469,6 +2472,16 @@ extension SettingsWorkflow: KitSectionsControllerDelegate {
     permittedDirectories.revoke(path)
   }
 
+  func kitSectionsControllerDidSelectAddDirectory(_ controller: KitSectionsController) {
+    let documentPicker = UnifiedDocumentPickerController(forOpeningContentTypes: [.folder])
+    documentPicker.title = LocalizedString.forKey("permit_folder_access")
+    documentPicker.prompt = LocalizedString.forKey("grant")
+    documentPicker.allowsMultipleSelection = true
+    documentPicker.delegate = self
+    permittedDirectoryPicker = documentPicker
+    viewController.present(documentPicker, animated: true)
+  }
+
   func kitSectionsController(
     _ controller: KitSectionsController, didSelectPermission permission: PermissionState,
     for directory: AppDataDirectory
@@ -2478,6 +2491,7 @@ extension SettingsWorkflow: KitSectionsControllerDelegate {
       guard controller.appDataPermissions[directory] != .authorized else { return }
       let documentPicker = UnifiedDocumentPickerController(forOpeningContentTypes: [.folder])
       documentPicker.title = LocalizedString.forKey("permit_folder_access")
+      documentPicker.prompt = LocalizedString.forKey("grant")
       documentPicker.directoryURL = directory.url
       documentPicker.allowsMultipleSelection = false
       documentPicker.delegate = self
@@ -2625,6 +2639,22 @@ extension SettingsWorkflow: UnifiedDocumentPickerControllerDelegate {
   func documentPicker(_ controller: UnifiedDocumentPickerController, didPickDocumentsAt urls: [URL])
   {
     dispatchPrecondition(condition: .onQueue(.main))
+    // A pick counts only for the picker its property still points to. On a Mac, folder pickers
+    // are modeless panels, so opening a second one replaces the property while the first is still
+    // open; the first one's pick is then ignored rather than saved as another setting.
+    if controller === permittedDirectoryPicker {
+      permittedDirectoryPicker = nil
+      for url in urls {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        // Choosing a folder here is as explicit as re-enabling it, so a saved folder that was
+        // set to Disabled comes back on instead of being refused.
+        permittedDirectories.setEnabled(
+          true, for: url.standardizedFileURL.resolvingSymlinksInPath().path)
+        try? permittedDirectories.add(url)
+      }
+      return
+    }
     guard let url = urls.first else { return }
     guard url.startAccessingSecurityScopedResource() else { return }
     defer { url.stopAccessingSecurityScopedResource() }
@@ -2658,7 +2688,8 @@ extension SettingsWorkflow: UnifiedDocumentPickerControllerDelegate {
     } else if controller === modelsFolderPicker {
       modelsFolderPicker = nil
       delegate?.settingsWorkflow(self, didSelectModelsFolder: url, bookmarkData: bookmarkData)
-    } else {
+    } else if controller === workspaceFolderPicker {
+      workspaceFolderPicker = nil
       workspace.dictionary["workspace_folder", Data.self] = bookmarkData
     }
   }
