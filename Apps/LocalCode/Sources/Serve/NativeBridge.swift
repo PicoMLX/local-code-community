@@ -98,18 +98,35 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
   private var session: Session?
 
   fileprivate struct Files: Equatable {
+    /// The model families the bridge opens. A DeepSeek 4.1 checkpoint comes with its Engram file;
+    /// GLM 5.3 Flash is a checkpoint named as Local Code names it, `glm_5.3_flash_*.ckpt`.
+    enum Family: Equatable {
+      case deepSeek4_1(engram: String)
+      case glm5_3
+    }
+
     let checkpoint: String
-    let engram: String
+    let family: Family
     let drafter: String?
 
-    init(_ request: [String: Any]) throws {
+    /// `requiresEngram` keeps an entry point that serves only DeepSeek 4.1 to that family.
+    init(_ request: [String: Any], requiresEngram: Bool = true) throws {
       checkpoint = try Self.readableCheckpoint(request["checkpoint_path"], key: "checkpoint_path")
-      let engramFile = try Self.readableFile(request["engram_path"], key: "engram_path")
-      guard UInt64(engramFile.size) == DeepSeek4_1EngramConfiguration.deepSeekV4_1Flash.fileSize
-      else {
-        throw NativeRequestError.invalid("The DeepSeek 4.1 Engram file has an unexpected size.")
+      if let value = request["engram_path"].flatMap({ $0 is NSNull ? nil : $0 }) {
+        let engramFile = try Self.readableFile(value, key: "engram_path")
+        guard UInt64(engramFile.size) == DeepSeek4_1EngramConfiguration.deepSeekV4_1Flash.fileSize
+        else {
+          throw NativeRequestError.invalid("The DeepSeek 4.1 Engram file has an unexpected size.")
+        }
+        family = .deepSeek4_1(engram: engramFile.url.path)
+      } else if requiresEngram {
+        throw NativeRequestError.invalid("Set engram_path to an absolute model file path.")
+      } else if URL(fileURLWithPath: checkpoint).lastPathComponent.hasPrefix("glm_5.3_flash") {
+        family = .glm5_3
+      } else {
+        throw NativeRequestError.invalid(
+          "The checkpoint is neither DeepSeek 4.1, which needs its Engram file, nor GLM 5.3 Flash.")
       }
-      engram = engramFile.url.path
       if let value = request["drafter_path"], !(value is NSNull) {
         drafter = try Self.readableCheckpoint(value, key: "drafter_path")
       } else {
@@ -150,8 +167,10 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
 
     init(files: Files) {
       self.files = files
+      // Files built for this entry point require the Engram file.
+      guard case .deepSeek4_1(let engram) = files.family else { preconditionFailure("DeepSeek 4.1 only") }
       generator = DeepSeek4_1TextGenerator(
-        filePath: files.checkpoint, engramFilePath: files.engram, drafterFile: files.drafter)
+        filePath: files.checkpoint, engramFilePath: engram, drafterFile: files.drafter)
       graph.maxConcurrency = .limit(4)
     }
   }
@@ -240,33 +259,76 @@ private final class NativeGenerationRuntime: @unchecked Sendable {
 public typealias PicoLocalCodeTokenCallback =
   @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<Int32>?, Int32) -> Int32
 
-/// One DeepSeek 4.1 model. Opening is cheap: the weights load on the first generation.
+/// A model's generator. DeepSeek 4.1 also serves the token-level entry points; GLM 5.3 Flash serves
+/// chat only.
+private enum NativeTextGenerator {
+  case deepSeek4_1(DeepSeek4_1TextGenerator)
+  case glm5_3(GLM5_3TextGenerator)
+
+  init(_ files: NativeGenerationRuntime.Files) {
+    switch files.family {
+    case .deepSeek4_1(let engram):
+      self = .deepSeek4_1(
+        DeepSeek4_1TextGenerator(
+          filePath: files.checkpoint, engramFilePath: engram, drafterFile: files.drafter))
+    case .glm5_3:
+      self = .glm5_3(
+        GLM5_3TextGenerator(
+          filePath: files.checkpoint, chunkedPrefillMaxLength: 4096, drafterFile: files.drafter))
+    }
+  }
+
+  /// An adapter of its own: it holds its decode caches.
+  func makeAdapter() -> any ResponsesModelAdapter {
+    switch self {
+    case .deepSeek4_1(let generator):
+      DeepSeekResponsesModelAdapter(textGenerator: generator, projectPath: nil)
+    case .glm5_3(let generator):
+      GLM5_3ResponsesModelAdapter(textGenerator: generator, projectPath: nil)
+    }
+  }
+
+  var residentWeightsSize: UInt64 {
+    switch self {
+    case .deepSeek4_1(let generator): generator.residentWeightsSize
+    case .glm5_3(let generator): generator.residentWeightsSize
+    }
+  }
+
+  func unload() {
+    switch self {
+    case .deepSeek4_1(let generator): generator.unload()
+    case .glm5_3(let generator): generator.unload()
+    }
+  }
+}
+
+/// One model. Opening is cheap: the weights load on the first generation.
 private final class NativeTokenSession {
   /// Held while the model generates, through either entry point.
   let lock = NSLock()
   let graph = DynamicGraph()
   let stream = StreamContext(.GPU(0))
-  var generator: DeepSeek4_1TextGenerator
+  var model: NativeTextGenerator
   /// Conversations between chat requests. Each agent holds the KV cache of the prompt it last
   /// evaluated, so a request that goes on with its conversation evaluates only what is new.
   /// Guarded by `lock`.
   var idleAgents = ResponsesAgentPool<ResponsesAgent>()
   /// Lays out the chat requests' prompts. Each agent has an adapter of its own, which holds its
   /// caches, so this one is free while a request generates.
-  let promptAdapter: DeepSeekResponsesModelAdapter<DeepSeek4_1TextGenerator>
+  let promptAdapter: any ResponsesModelAdapter
   let promptLock = NSLock()
 
   init(files: NativeGenerationRuntime.Files) {
-    generator = DeepSeek4_1TextGenerator(
-      filePath: files.checkpoint, engramFilePath: files.engram, drafterFile: files.drafter)
+    model = NativeTextGenerator(files)
     graph.maxConcurrency = .limit(4)
-    promptAdapter = DeepSeekResponsesModelAdapter(textGenerator: generator, projectPath: nil)
+    promptAdapter = model.makeAdapter()
   }
 
   func makeAgent() -> ResponsesAgent {
     ResponsesAgent(
-      adapter: DeepSeekResponsesModelAdapter(textGenerator: generator, projectPath: nil),
-      graph: graph, streamContext: stream, timeSlice: 1, activeTurnCount: ManagedAtomic(1))
+      adapter: model.makeAdapter(), graph: graph, streamContext: stream, timeSlice: 1,
+      activeTurnCount: ManagedAtomic(1))
   }
 }
 
@@ -275,19 +337,39 @@ private func copy(_ message: String, to buffer: UnsafeMutablePointer<CChar>?, ca
   _ = message.withCString { strlcpy(buffer, $0, Int(capacity)) }
 }
 
-/// Returns a model handle, or nil after writing the reason to `error`. `drafter` may be nil.
+/// Returns a DeepSeek 4.1 model handle, or nil after writing the reason to `error`. `drafter` may
+/// be nil.
 @_cdecl("pico_local_code_open_v2")
 public func picoLocalCodeOpen(
   _ checkpoint: UnsafePointer<CChar>?, _ engram: UnsafePointer<CChar>?,
   _ drafter: UnsafePointer<CChar>?, _ error: UnsafeMutablePointer<CChar>?, _ errorCapacity: Int32
+) -> UnsafeMutableRawPointer? {
+  openModel(checkpoint, engram, drafter, requiresEngram: true, error, errorCapacity)
+}
+
+/// `pico_local_code_open_v2` for every family the bridge serves: with `engram`, DeepSeek 4.1; without
+/// it, GLM 5.3 Flash, whose checkpoint is named `glm_5.3_flash_*.ckpt`. `drafter` may be nil. A GLM
+/// handle serves the chat entry points only: the token-level ones speak DeepSeek 4.1's tokens.
+@_cdecl("pico_local_code_open_v3")
+public func picoLocalCodeOpenAnyFamily(
+  _ checkpoint: UnsafePointer<CChar>?, _ engram: UnsafePointer<CChar>?,
+  _ drafter: UnsafePointer<CChar>?, _ error: UnsafeMutablePointer<CChar>?, _ errorCapacity: Int32
+) -> UnsafeMutableRawPointer? {
+  openModel(checkpoint, engram, drafter, requiresEngram: false, error, errorCapacity)
+}
+
+private func openModel(
+  _ checkpoint: UnsafePointer<CChar>?, _ engram: UnsafePointer<CChar>?,
+  _ drafter: UnsafePointer<CChar>?, requiresEngram: Bool, _ error: UnsafeMutablePointer<CChar>?,
+  _ errorCapacity: Int32
 ) -> UnsafeMutableRawPointer? {
   var request: [String: Any] = [:]
   request["checkpoint_path"] = checkpoint.flatMap { String(validatingCString: $0) }
   request["engram_path"] = engram.flatMap { String(validatingCString: $0) }
   request["drafter_path"] = drafter.flatMap { String(validatingCString: $0) }
   do {
-    let session = NativeTokenSession(files: try NativeGenerationRuntime.Files(request))
-    return Unmanaged.passRetained(session).toOpaque()
+    let files = try NativeGenerationRuntime.Files(request, requiresEngram: requiresEngram)
+    return Unmanaged.passRetained(NativeTokenSession(files: files)).toOpaque()
   } catch let failure {
     copy(failure.localizedDescription, to: error, capacity: errorCapacity)
     return nil
@@ -301,7 +383,7 @@ public func picoLocalCodeClose(_ handle: UnsafeMutableRawPointer?) {
   let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeRetainedValue()
   session.lock.lock()
   for agent in session.idleAgents.removeAll() { agent.unloadCaches() }
-  session.generator.unload()
+  session.model.unload()
   session.lock.unlock()
 }
 
@@ -310,7 +392,7 @@ public func picoLocalCodeClose(_ handle: UnsafeMutableRawPointer?) {
 public func picoLocalCodeResidentBytes(_ handle: UnsafeMutableRawPointer?) -> Int64 {
   guard let handle else { return 0 }
   let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
-  return Int64(clamping: session.generator.residentWeightsSize)
+  return Int64(clamping: session.model.residentWeightsSize)
 }
 
 /// Writes up to `capacity` token IDs and returns how many `text` has, or -1 for invalid UTF-8.
@@ -393,6 +475,9 @@ public func picoLocalCodeGenerateTokens(
   let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
   guard session.lock.try() else { return 2 }
   defer { session.lock.unlock() }
+  // Token IDs here are DeepSeek 4.1's; another family's handle serves chat only.
+  guard case .deepSeek4_1(var generator) = session.model else { return 2 }
+  defer { session.model = .deepSeek4_1(generator) }
   inferenceGate.lock()
   defer { inferenceGate.unlock() }
 
@@ -413,12 +498,12 @@ public func picoLocalCodeGenerateTokens(
   var kvCache = DeepSeek4_1TextGenerator.KVCache()
   // A nil project path gives the generator no readable or writable context cache.
   let contextCache = DeepSeek4_1ContextCache(
-    projectPath: nil, checkpointStride: session.generator.checkpointStride)
+    projectPath: nil, checkpointStride: generator.checkpointStride)
   let graph = session.graph
   let input = graph.variable(Tensor<Int32>(ids, .CPU, .C(ids.count)).toGPU(0))
   var generated = graph.withStream(session.stream) {
     graph.withNoGrad {
-      session.generator.decode(
+      generator.decode(
         graph: graph, tokens: input, tokenOffset: 0, thinkingBudget: 0,
         deterministic: deterministic != 0, kvCache: &kvCache, contextTokens: ids,
         contextCache: contextCache
@@ -437,7 +522,7 @@ public func picoLocalCodeGenerateTokens(
   let stopped = generated.last == endOfSentence
   if stopped { generated.removeLast() }
   deliver(generated)
-  let statistics = session.generator.lastInteractionStatistics
+  let statistics = generator.lastInteractionStatistics
   if let usage {
     usage[0] = Int64(statistics.prefillTokensSoFar)
     usage[1] = Int64(delivered)

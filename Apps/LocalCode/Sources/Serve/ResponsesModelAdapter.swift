@@ -527,7 +527,6 @@ final class DeepSeekResponsesModelAdapter<Generator: DeepSeekTextGenerator>: Res
   }
 }
 
-#if !PICO_NATIVE_LOCAL_CODE
 final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
   private struct Scanner: ResponsesToolCallScanner {
     var parser = GLM5_3ToolCallParser()
@@ -541,12 +540,13 @@ final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
   }
 
   private var textGenerator: GLM5_3TextGenerator
-  private let projectPath: String
+  /// Where the context cache and images live; nil keeps neither.
+  private let projectPath: String?
   private var kvCache = GLM5_3TextGenerator.KVCache()
   var kvCacheTokenLength: Int { kvCache.tokenLength }
   private(set) var restoredTokenLength: Int?
 
-  init(textGenerator: GLM5_3TextGenerator, projectPath: String) {
+  init(textGenerator: GLM5_3TextGenerator, projectPath: String?) {
     self.textGenerator = textGenerator
     self.projectPath = projectPath
   }
@@ -554,7 +554,7 @@ final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
   var filePath: String { textGenerator.filePath }
   var maximumContextLength: Int { GLM5_3CodeAgent.maximumContextLength }
   var minimumGenerationReserve: Int { GLM5_3CodeAgent.minimumGenerationReserve }
-  var isImageSupported: Bool { true }
+  var isImageSupported: Bool { projectPath != nil }
   // The generator reads the open thinking and its length from the assistant turn.
   var countsThinkingFromContext: Bool { true }
 
@@ -567,11 +567,11 @@ final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
         reasoningEffort: GLM5_3CodeAgent.ReasoningEffort(reasoningEffort)),
       unsafeTokenizer: GLM5_3TextGenerator.unsafeTokenizer,
       safeTokenizer: GLM5_3TextGenerator.safeTokenizer)
-    let store = EmbedsFileStore(projectPath: projectPath)
+    let store = projectPath.map(EmbedsFileStore.init(projectPath:))
     var embedSpans = [EmbedSpan]()
     // The agent's renderer keeps each turn's thinking and writes calls the way the model does.
     let transcriptTokens = GLM5_3CodeAgent.parse(request.transcript) { image, tokenOffset in
-      guard let digest = try? store.insert(data: image.data),
+      guard let store, let digest = try? store.insert(data: image.data),
         let count = GLM5_3TextGenerator.imageTokenCount(filePath: store.filePath(for: digest))
       else { return [] }
       embedSpans.append(
@@ -687,7 +687,6 @@ final class GLM5_3ResponsesModelAdapter: ResponsesModelAdapter {
     kvCache = GLM5_3TextGenerator.KVCache()
   }
 }
-#endif
 
 #if !PICO_NATIVE_LOCAL_CODE
 final class Inkling2ResponsesModelAdapter: ResponsesModelAdapter {

@@ -1,12 +1,22 @@
+#if !PICO_NATIVE_LOCAL_CODE
 import Atomics
 import BashToolContext
 import DataModels
 import Dispatch
-import Foundation
 import NNC
 import ProjectHistoryManager
 import Tokenizer
 import os.lock
+#endif
+import Foundation
+
+#if PICO_NATIVE_LOCAL_CODE
+/// The native target builds the same GLM 5.3 prompt codec without the app's tool runner.
+enum GLM5_3CodeAgent {
+  static var maximumContextLength: Int { 192 * 1_024 }
+  static var minimumGenerationReserve: Int { 8_192 }
+}
+#endif
 
 extension GLM5_3CodeAgent {
   public enum ReasoningEffort: Int {
@@ -37,7 +47,10 @@ extension GLM5_3CodeAgent {
       }
     }
   }
+}
 
+#if !PICO_NATIVE_LOCAL_CODE
+extension GLM5_3CodeAgent {
   public func isCapReachedForStopping(
     from resultAtStop: CodeAgentResult, to result: CodeAgentResult
   ) -> Bool {
@@ -1363,6 +1376,8 @@ public final class GLM5_3CodeAgent: CodeAgent {
   }
 }
 
+#endif
+
 extension GLM5_3TextGenerator.ContinuationState {
   init(_ state: ContinuationState) {
     switch state {
@@ -1378,6 +1393,7 @@ extension GLM5_3TextGenerator.ContinuationState {
   }
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 extension GLM5_3CodeAgent {
   static func toolResultTokens(
     for toolCalls: [ToolCall], responses: [Int32: ToolResponse], tokenizer: TiktokenTokenizer,
@@ -1425,3 +1441,4 @@ extension GLM5_3CodeAgent {
     return (result, embedSpans)
   }
 }
+#endif

@@ -1582,6 +1582,9 @@ _DEEPSEEK_NATIVE_SRCS = [
     "Sources/Models/DeepSeek4_1EngramCache.swift",
     "Sources/Models/DeepSeek4_1Image.swift",
     "Sources/Models/DeepSeek4_1TextGenerator.swift",
+    "Sources/Models/GLM5_3ContextCache.swift",
+    "Sources/Models/GLM5_3Image.swift",
+    "Sources/Models/GLM5_3TextGenerator.swift",
 ]
 
 _DEEPSEEK_NATIVE_DEPS = [
@@ -1603,6 +1606,9 @@ swift_library(
         "Sources/Agent/DeepSeek4CodeAgent.swift",
         "Sources/Agent/DeepSeek4CodeAgent+Parse.swift",
         "Sources/Agent/DeepSeek4ToolCallParser.swift",
+        "Sources/Agent/GLM5_3CodeAgent.swift",
+        "Sources/Agent/GLM5_3CodeAgent+Parse.swift",
+        "Sources/Agent/GLM5_3ToolCallParser.swift",
         "Sources/Agent/SystemPromptSection.swift",
         "Sources/Agent/SystemPromptTokenization.swift",
         "Sources/Agent/ToolCallParser.swift",
