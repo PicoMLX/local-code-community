@@ -151,6 +151,12 @@ public struct TiktokenTokenizer {
     return text
   }
 
+  /// The tokens' bytes, joined. They are UTF-8 except where the tokens begin or end inside a
+  /// character, which `decode` turns into an empty string.
+  public func decodeBytes(_ tokens: [Int32]) -> [UInt8] {
+    tokens.flatMap { [UInt8](decoder[$0, default: Data()]) }
+  }
+
   public func makeTokenStreamer(
     specialTokens: [Int32: String] = [:]
   ) -> TokenStreamer {

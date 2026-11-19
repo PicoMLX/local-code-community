@@ -55,27 +55,6 @@ extension DeepSeek4CodeAgent {
     return (Array(tokens[start...]), EmbedSpan.slice(embedSpans, range: start..<tokens.count))
   }
 
-  static func messageSegments(in tokens: [Int32]) -> [[Int32]] {
-    guard !tokens.isEmpty else { return [] }
-    var segments = [[Int32]]()
-    var segmentStart: Int? = nil
-    for index in tokens.indices {
-      guard tokens[index] == userToken else { continue }
-      if let start = segmentStart {
-        segments.append(Array(tokens[start..<index]))
-      } else if index > tokens.startIndex {
-        segments.append(Array(tokens[tokens.startIndex..<index]))
-      }
-      segmentStart = index
-    }
-    if let start = segmentStart {
-      segments.append(Array(tokens[start..<tokens.endIndex]))
-    } else {
-      segments.append(tokens)
-    }
-    return segments
-  }
-
   static func replaceSystemReminder(
     in tokens: [Int32], embedSpans: [EmbedSpan] = [], with replacement: [Int32],
     startTokens: [Int32], endTokens: [Int32]

@@ -2839,8 +2839,9 @@
 "choose_a_folder_on_disk_dot" = "Chọn thư mục trên ổ đĩa…";
 
 "permit_folder_access" = "Cho phép truy cập thư mục";
+"grant" = "Cấp quyền";
 "permitted_folders" = "Thư mục được cho phép";
-"permitted_folders_detail" = "Liệt kê các thư mục bên ngoài dự án mà bạn đã chọn khi lệnh permit yêu cầu quyền truy cập. Chọn “Đã tắt” để tạm dừng một thư mục, hoặc dùng nút dấu trừ để gỡ bỏ thư mục đó. Tắt “Bật” để tạm dừng tất cả và chặn các yêu cầu mới; danh sách vẫn được giữ lại.";
+"permitted_folders_detail" = "Liệt kê các thư mục bên ngoài dự án mà bạn đã cho phép truy cập. Thêm thư mục bằng nút dấu cộng, hoặc chọn thư mục khi lệnh permit yêu cầu quyền truy cập. Chọn “Đã tắt” để tạm dừng một thư mục, hoặc dùng nút dấu trừ để gỡ bỏ thư mục đó. Tắt “Bật” để tạm dừng tất cả và chặn các yêu cầu mới; danh sách vẫn được giữ lại.";
 
 // Idle model unloading
 "unload_models_when_idle" = "Giải phóng mô hình khi nhàn rỗi";
@@ -3077,6 +3078,7 @@
 "reload" = "Tải lại";
 "no_open_tabs" = "Không có tab nào đang mở.";
 "open_a_tab" = "Mở một tab";
+"add_a_folder" = "Thêm một thư mục";
 "activities" = "Hoạt động";
 "browser_tabs" = "Tab trình duyệt";
 "browser_tabs_detail" = "Các tab mà tác tử mở bằng web-browse-cli, tab của cuộc trò chuyện này được xếp trước. Mở một tab để xem và sử dụng. Nút dấu trừ sẽ đóng tab và dừng mọi lệnh vẫn đang dùng tab đó.";
@@ -3148,3 +3150,38 @@
 "port_x_is_in_use" = "Cổng %@ đang được ứng dụng khác sử dụng";
 
 "local_model_not_on_phone" = "Mô hình này không có trên iPhone này và iPhone không tải xuống mô hình cục bộ. Hãy chọn mô hình khác.";
+
+"turn_finished_detail" = "“%@” đã xong.";
+"paired_with_local_code_detail" = "Đã ghép nối với Local Code trên thiết bị này. Gửi /help để xem những gì nó có thể làm.";
+"send_pairing_code_detail" = "Để dùng bot này, hãy gửi cho nó mã ghép nối trong Local Code › Kit › %@.";
+"no_threads_yet_detail" = "Chưa có cuộc trò chuyện nào. Gửi tin nhắn để bắt đầu một cuộc.";
+"thread_status_summary_detail" = "Cuộc trò chuyện: %1$ld. Đang làm: %2$ld. Trả lời mới: %3$ld.";
+"no_thread_numbered_detail" = "Không có cuộc trò chuyện %ld. Gửi /threads để xem danh sách.";
+"nothing_running_detail" = "Không có gì đang chạy.";
+"stopped_thread_detail" = "Đã dừng “%@”.";
+"unknown_command_detail" = "Lệnh không xác định. Gửi /help để xem các lệnh.";
+"x_conversations" = "Trò chuyện trên %@";
+"started_thread_detail" = "Đã bắt đầu một cuộc trò chuyện. Câu trả lời sẽ đến đây khi xong.";
+"sent_to_thread_detail" = "Đã gửi đến “%@”. Câu trả lời sẽ đến đây khi xong.";
+"queued_in_thread_detail" = "Đang chờ trong “%@” sau lượt đang chạy.";
+"chat_commands_detail" = "Tin nhắn sẽ đến cuộc trò chuyện của đoạn chat này, bắt đầu từ tin nhắn đầu tiên của bạn. Lệnh:\n/threads – các cuộc trò chuyện và trạng thái\n/status [số] – trạng thái và câu trả lời cuối của một cuộc trò chuyện\n/send số tin nhắn – gửi đến một cuộc trò chuyện khác\n/stop [số] – dừng lượt của một cuộc trò chuyện";
+"working" = "Đang làm";
+"new_reply" = "Trả lời mới";
+"bot_token_rejected_detail" = "Mã thông báo bot bị từ chối. Hãy đặt mã mới.";
+"discord_intents_refused_detail" = "Discord đã từ chối các gateway intent của bot. Hãy kiểm tra bot trong Discord Developer Portal.";
+"messages_automation_detail" = "Local Code không thể gửi trong Tin nhắn. Hãy cho phép trong Cài đặt hệ thống › Quyền riêng tư & Bảo mật › Tự động hóa.";
+"no_model_selected_detail" = "Hãy chọn một mô hình trong Local Code trước.";
+"thread_gone_detail" = "Cuộc trò chuyện đó không còn trong Local Code.";
+"send_failed_detail" = "Local Code không thể gửi tin nhắn.";
+"bot_token" = "Mã thông báo bot";
+"enter_your_bot_token" = "Nhập mã thông báo bot của bạn.";
+"pairing_code" = "Mã ghép nối";
+"paired_accounts" = "Tài khoản đã ghép nối";
+"forget_paired_accounts" = "Quên các tài khoản đã ghép nối";
+"connected_as" = "Đã kết nối là %@";
+"needs_a_bot_token" = "Cần mã thông báo bot";
+"needs_messages_permission" = "Cần quyền truy cập Tin nhắn";
+"message_yourself_to_start" = "Nhắn cho chính bạn để bắt đầu";
+"imessage_detail" = "Nhắn cho chính bạn trong Tin nhắn, từ máy Mac này hoặc các thiết bị khác, để làm việc với các cuộc trò chuyện của Local Code khi ứng dụng đang mở. Ứng dụng đọc đoạn chat bằng quyền truy cập Tin nhắn ở trên và trả lời ở đó. Gửi /help để xem các lệnh.";
+"telegram_detail" = "Nhắn cho bot Telegram của riêng bạn để làm việc với các cuộc trò chuyện của Local Code khi ứng dụng đang mở. Tạo bot bằng @BotFather, đặt mã thông báo của bot ở đây và gửi cho bot mã ghép nối. Gửi /help để xem các lệnh.";
+"discord_detail" = "Nhắn cho bot Discord của riêng bạn để làm việc với các cuộc trò chuyện của Local Code khi ứng dụng đang mở. Tạo một ứng dụng có bot trong Discord Developer Portal, đặt mã thông báo của bot ở đây và gửi cho bot mã ghép nối trong tin nhắn trực tiếp hoặc bằng cách nhắc đến bot. Gửi /help để xem các lệnh.";

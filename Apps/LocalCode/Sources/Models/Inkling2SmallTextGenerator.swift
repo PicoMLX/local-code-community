@@ -144,6 +144,10 @@ public struct Inkling2SmallTextGenerator {
 
   // <|end_message|> closes the thinking message.
   private static let endThinkToken: Int32 = 200_010
+  // <|message_model|> opens a model message, and <|content_thinking|> right after makes it the
+  // thinking one.
+  private static let modelMessageToken: Int32 = 200_001
+  private static let thinkingContentToken: Int32 = 200_008
   // <|content_model_end_sampling|> ends the model's turn.
   private static let eosTokenIds = Set<Int32>([200_006, 199_999])
   private static let maximumContextLength = 1_024 * 1_024
@@ -292,6 +296,10 @@ public struct Inkling2SmallTextGenerator {
   }
 }
 
+extension Inkling2SmallTextGenerator: TextGenerator {
+  public var safeTokenizer: TiktokenTokenizer { Self.safeTokenizer }
+}
+
 extension Inkling2SmallTextGenerator {
   /// Drops only shared model weights, waiting for an active decode to return.
   /// Safe from a tool worker; graph-owned conversation caches stay with the agent.
@@ -312,6 +320,63 @@ extension Inkling2SmallTextGenerator {
   /// to the start only once a page.
   private var slidingCacheCapacity: Int {
     configuration.slidingWindow - 1 + max(chunkedPrefillMaxLength, 128)
+  }
+
+  /// Where a generation is in its thinking. Thinking is open from the generation's start until a
+  /// model message opens with other content or the thinking message ends, and the budget counts the
+  /// thinking message's tokens. A generation follows the last user, system or tool message, so a
+  /// resumed one reads both from its context.
+  struct ThinkingPhase {
+    // <|message_user|>, <|message_system|> and <|message_tool|> open the messages a generation
+    // follows.
+    private static let inputMessageTokens = Set<Int32>([200_000, 200_002, 200_003])
+    // <|content_text|>, <|content_tool_error|>, <|content_invoke_tool_json|> and
+    // <|content_invoke_tool_text|> open an answer or a tool call instead.
+    private static let answerContentTokens = Set<Int32>([200_004, 200_022, 200_049, 200_057])
+
+    let budget: Int
+    private(set) var isEnded: Bool
+    private(set) var isThinking = false
+    private(set) var thinkingTokenCount = 0
+    private var lastToken: Int32?
+
+    init(budget: Int, contextTokens: [Int32]) {
+      self.budget = budget
+      isEnded = budget <= 0
+      lastToken = contextTokens.last
+      guard !isEnded,
+        let inputStart = contextTokens.lastIndex(where: { Self.inputMessageTokens.contains($0) }),
+        let inputEnd = contextTokens[inputStart...].firstIndex(of: endThinkToken)
+      else { return }
+      for token in contextTokens[(inputEnd + 1)...] {
+        append(token)
+      }
+    }
+
+    /// Out of budget, the next token closes the thinking message.
+    var shouldEndThinking: Bool { isThinking && thinkingTokenCount >= budget }
+
+    /// A generation thinks in one message at its start, as the chat template writes it. Once that
+    /// is over, or without a budget, the message the model just opened can't be thinking: cut off
+    /// in the middle of a thought, the model would open another to think on.
+    var excludesThinking: Bool { isEnded && lastToken == modelMessageToken }
+
+    mutating func append(_ token: Int32) {
+      lastToken = token
+      guard !isEnded else { return }
+      if isThinking {
+        if token == endThinkToken {
+          isThinking = false
+          isEnded = true
+        } else {
+          thinkingTokenCount += 1
+        }
+      } else if token == thinkingContentToken {
+        isThinking = true
+      } else if token == endThinkToken || Self.answerContentTokens.contains(token) {
+        isEnded = true
+      }
+    }
   }
 
   /// Placeholder tokens (`<|unused_200054|>`) an image takes in the prompt, from its file's size.
@@ -540,10 +605,25 @@ extension Inkling2SmallTextGenerator {
     }
     compilePrefillHeadroom(cacheCapacity: cacheCapacity)
 
-    // The last chunk's logits pick the first generated token.
-    func sample(_ logits: DynamicGraph.Tensor<Float16>, thinking: Bool)
-      -> DynamicGraph.Tensor<Int32>
-    {
+    var thinkingPhase = ThinkingPhase(budget: thinkingBudget, contextTokens: contextTokens)
+    let endThinkingTokenCPU = graph.variable(
+      Tensor<Int32>([Self.endThinkToken], kind: .CPU, format: .NHWC, shape: [1]))
+    // Uploaded the first time a reply can't think, as an upload waits for the GPU.
+    var thinkingExclusion: DynamicGraph.Tensor<Float16>?
+    // The last chunk's logits pick the first generated token. The phase has read every token
+    // before the one they pick.
+    func sample(_ logits: DynamicGraph.Tensor<Float16>) -> DynamicGraph.Tensor<Int32> {
+      if thinkingPhase.excludesThinking {
+        let exclusion =
+          thinkingExclusion
+          ?? graph.variable(
+            Tensor<Float16>([-Float16.infinity], kind: .CPU, format: .NHWC, shape: [1, 1]).toGPU(0))
+        thinkingExclusion = exclusion
+        let token = Int(Self.thinkingContentToken)
+        var logits = logits
+        logits[0..<1, token..<(token + 1)] = exclusion
+      }
+      let thinking = !thinkingPhase.isEnded
       if deterministic && !thinking {
         return Functional.argmax(logits, axis: 1).reshaped(format: .NHWC, shape: [1])
       }
@@ -597,6 +677,10 @@ extension Inkling2SmallTextGenerator {
     var prefillTokenCPU: DynamicGraph.Tensor<Int32>?
     // A restore needs an empty cache, so the context starts at 0 and one token stays to prefill.
     var prefillChunkStart = restoredTokenLength
+    // With the context restored and the weights loaded, before the timed prefill.
+    guard continuationHandler(prefillChunkStart, tokenLength, [], statistics) == .continue else {
+      return []
+    }
     let initialPrefillDurationSoFar =
       recentInteractionStatistics[interactionStatisticsIndex].prefillDurationSoFar
     let prefillStartTime = CACurrentMediaTime()
@@ -667,9 +751,10 @@ extension Inkling2SmallTextGenerator {
       advance(by: length)
       saveCheckpoint()
       if start + length == tokenLength {
-        prefillTokenCPU = sample(
-          prefillOutputs[0].as(of: Float16.self), thinking: thinkingBudget > 0
-        ).toCPU()
+        prefillTokenCPU =
+          thinkingPhase.shouldEndThinking
+          ? endThinkingTokenCPU
+          : sample(prefillOutputs[0].as(of: Float16.self)).toCPU()
         if shouldCompilePrefillHeadroom {
           graph.joined()
           compilePrefillHeadroom(cacheCapacity: cacheCapacity)
@@ -715,7 +800,7 @@ extension Inkling2SmallTextGenerator {
     defer { DynamicGraph.queueWatermark = queueWatermark }
     var shouldAppendPendingToken = true
     var shouldStopAfterSampling = false
-    var thinkingEnded = firstToken == Self.endThinkToken
+    thinkingPhase.append(firstToken)
     var decodeIndex = 0
     let initialTokenGenerationDurationSoFar =
       recentInteractionStatistics[interactionStatisticsIndex].tokenGenerationDurationSoFar
@@ -726,10 +811,9 @@ extension Inkling2SmallTextGenerator {
         + initialTokenGenerationDurationSoFar
     }
     while decodeIndex < decodeTokenCapacity {
-      if thinkingBudget > 0 && !thinkingEnded && decodeIndex == thinkingBudget {
-        nextTokenGPU = graph.variable(
-          Tensor<Int32>([Self.endThinkToken], kind: .CPU, format: .NHWC, shape: [1]).toGPU(0))
-        thinkingEnded = true
+      // The pending token follows every token the phase has read; the first is already read.
+      if decodeIndex > 0, thinkingPhase.shouldEndThinking {
+        nextTokenGPU = endThinkingTokenCPU.toGPU(0)
       }
       if kvCache.tokenLength + 1 > cacheCapacity {
         cacheCapacity = min(
@@ -766,9 +850,7 @@ extension Inkling2SmallTextGenerator {
         generated.append(decodedToken)
         saveCheckpoint(generated: generated)
         recentInteractionStatistics[interactionStatisticsIndex].tokenGeneratedSoFar += 1
-        if decodedToken == Self.endThinkToken {
-          thinkingEnded = true
-        }
+        thinkingPhase.append(decodedToken)
         if Self.eosTokenIds.contains(decodedToken) {
           shouldAppendPendingToken = false
           break
@@ -787,7 +869,7 @@ extension Inkling2SmallTextGenerator {
           break
         }
       }
-      nextTokenGPU = sample(logits, thinking: thinkingBudget > 0 && !thinkingEnded)
+      nextTokenGPU = sample(logits)
       decodeIndex += 1
       if shouldStopAfterSampling {
         break

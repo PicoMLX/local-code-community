@@ -1,5 +1,7 @@
+#if !PICO_NATIVE_LOCAL_CODE
 import BashToolContext
 import ProjectHistoryManager
+#endif
 
 public struct CodeAgentStatistics: Sendable {
   public var prefillDurationSoFar: Float
@@ -41,6 +43,11 @@ public struct CodeAgentStatistics: Sendable {
   }
 }
 
+#if PICO_NATIVE_LOCAL_CODE
+public struct CodeAgentResult: Sendable {
+  static let empty = Self()
+}
+#else
 public struct CodeAgentResult: Sendable {
   public var thinkTokens: [Int32]
   public var outputTokens: [Int32]
@@ -89,6 +96,7 @@ public struct CodeAgentResult: Sendable {
     toolCalls: [], toolCallHistory: [], incompleteToolCall: nil, hasIncompleteToolCall: false,
     memoryContext: nil, systemSeenMemoryContext: nil)
 }
+#endif
 
 public enum ContinuationState: Equatable, Sendable {
   case `continue`
@@ -107,6 +115,7 @@ public enum CodeAgentProgress: Sendable {
   case timeSliceEnded
 }
 
+#if !PICO_NATIVE_LOCAL_CODE
 public protocol CodeAgent: AnyObject {
   var bashUserInteraction: BashUserInteraction { get }
   var thinkingBudget: Int32 { get set }
@@ -149,3 +158,4 @@ public protocol CodeAgent: AnyObject {
 
   func restoreSuspension(threadId: Int64, environment: any CodeAgentEnvironment) throws -> Bool
 }
+#endif

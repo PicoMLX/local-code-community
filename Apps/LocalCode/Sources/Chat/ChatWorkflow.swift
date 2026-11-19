@@ -55,6 +55,8 @@ final class ChatWorkflow: Workflow {
   let viewController: any ChatViewControllable
   let settingsWorkflow: SettingsWorkflow
   let threadNotifications = ThreadNotifications()
+  /// Lets Telegram, Discord and iMessage chats work with the threads.
+  let messagingBridge: MessagingBridge
   let workspace: SQLiteWorkspace
   private let accountManager: AccountManager
   // The welcome walkthrough, for as long as the welcome thread is open.
@@ -233,6 +235,9 @@ final class ChatWorkflow: Workflow {
     self.accountManager = accountManager
     let permittedDirectories = PermittedDirectories(workspace: workspace)
     self.permittedDirectories = permittedDirectories
+    let messagingBridge = MessagingBridge(
+      workspace: workspace, permittedDirectories: permittedDirectories)
+    self.messagingBridge = messagingBridge
     // Set before the initial model's path is resolved below. A stale bookmark still resolves to
     // the folder where it moved.
     var isModelsFolderStale = false
@@ -249,7 +254,7 @@ final class ChatWorkflow: Workflow {
     let settingsWorkflow = SettingsWorkflow(
       workspace: workspace, userInterfaceIdiom: userInterfaceIdiom, queue: queue,
       accountManager: accountManager, accountClient: accountClient,
-      permittedDirectories: permittedDirectories)
+      permittedDirectories: permittedDirectories, messagingStatus: messagingBridge.status)
     self.settingsWorkflow = settingsWorkflow
     let skillCatalog = SkillCatalog.find(
       roots: SkillCatalog.roots(
@@ -289,6 +294,10 @@ final class ChatWorkflow: Workflow {
           filePath: LLMZoo.filePathForModelDownloaded(initialLLM),
           chunkedPrefillMaxLength: chunkedPrefillMaxLength, weightsStreaming: weightsStreaming,
           drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
+      case .inkling_2_small:
+        textGenerator = Inkling2SmallTextGenerator(
+          filePath: LLMZoo.filePathForModelDownloaded(initialLLM),
+          chunkedPrefillMaxLength: chunkedPrefillMaxLength, weightsStreaming: weightsStreaming)
       case .deepseek_4_1_flash:
         guard let engram = specification.engram else {
           preconditionFailure("DeepSeek 4.1 requires an Engram companion")
@@ -347,6 +356,8 @@ final class ChatWorkflow: Workflow {
     viewController.delegate = self
     settingsWorkflow.delegate = self
     agentScheduler.delegate = self
+    messagingBridge.delegate = self
+    messagingBridge.start()
     if ServeController.isAvailable {
       serveEnabledSubscription = workspace.dictionary.subscribe(
         "serve_responses_enabled", of: Bool.self
@@ -637,9 +648,12 @@ final class ChatWorkflow: Workflow {
     duration: TimeInterval
   ) {
     let projectPath = projectURL.standardizedFileURL.resolvingSymlinksInPath().path
-    guard !isViewingThread(projectPath: projectPath, threadId: threadId),
-      let thread = projectHistoryManager.thread(id: threadId)
-    else { return }
+    guard let thread = projectHistoryManager.thread(id: threadId) else { return }
+    // Chats that sent to the thread get its answer, even while the Mac shows it.
+    messagingBridge.threadDidFinishTurn(
+      ProjectThreadIdentifier(projectURL: projectURL, threadId: threadId),
+      title: thread.title ?? "", response: thread.lastMessage)
+    guard !isViewingThread(projectPath: projectPath, threadId: threadId) else { return }
     if projectHistoryManager.setThreadHasUnreadResponse(id: threadId, hasUnreadResponse: true) {
       if let thread = projectHistoryManager.thread(id: threadId) {
         settingsWorkflow.setInactiveProjectThread(thread, projectPath: projectPath)
@@ -671,6 +685,8 @@ final class ChatWorkflow: Workflow {
     case let codeAgent as DeepSeek4CodeAgent<DeepSeek4_1TextGenerator>:
       codeAgent.reasoningEffort = .init(reasoningEffort)
     case let codeAgent as GLM5_3CodeAgent:
+      codeAgent.reasoningEffort = .init(reasoningEffort)
+    case let codeAgent as Inkling2CodeAgent:
       codeAgent.reasoningEffort = .init(reasoningEffort)
     default:
       preconditionFailure("Unsupported code agent")
@@ -826,6 +842,10 @@ final class ChatWorkflow: Workflow {
     case .glm_5_3_flash:
       // The Z.ai mark is a flat dark glyph; template rendering keeps it visible in dark mode.
       return #imageLiteral(resourceName: "zai-20").withRenderingMode(.alwaysTemplate)
+    case .inkling_2_small:
+      // Thinking Machines' mark is a flat dark square; template rendering keeps it visible in dark
+      // mode, as for Z.ai's.
+      return #imageLiteral(resourceName: "thinkingmachines-20").withRenderingMode(.alwaysTemplate)
     case nil:
       return #imageLiteral(resourceName: "cube").withRenderingMode(.alwaysTemplate)
     }
@@ -1054,6 +1074,10 @@ final class ChatWorkflow: Workflow {
         filePath: filePath, chunkedPrefillMaxLength: chunkedPrefillMaxLength,
         weightsStreaming: weightsStreaming,
         drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
+    case .inkling_2_small:
+      return Inkling2SmallTextGenerator(
+        filePath: filePath, chunkedPrefillMaxLength: chunkedPrefillMaxLength,
+        weightsStreaming: weightsStreaming)
     case .deepseek_4_1_flash:
       guard let engram = specification.engram else { return nil }
       return DeepSeek4_1TextGenerator(
@@ -1910,6 +1934,11 @@ final class ChatWorkflow: Workflow {
         GLM5_3ContextCache(
           projectPath: projectURL.path, checkpointStride: textGenerator.checkpointStride
         ).loadSuspension(threadId: threadId) != nil
+    case let textGenerator as Inkling2SmallTextGenerator:
+      hasPersistedSuspension =
+        Inkling2SmallContextCache(
+          projectPath: projectURL.path, checkpointStride: textGenerator.checkpointStride
+        ).loadSuspension(threadId: threadId) != nil
     default:
       preconditionFailure("Unsupported text generator")
     }
@@ -2018,6 +2047,8 @@ final class ChatWorkflow: Workflow {
         safeTokenizer = DeepSeek4_1TextGenerator.safeTokenizer
       case .glm_5_3_flash:
         safeTokenizer = GLM5_3TextGenerator.safeTokenizer
+      case .inkling_2_small:
+        safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
       case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
         safeTokenizer = Qwen3_5TextGenerator.safeTokenizer
       }
@@ -2095,6 +2126,9 @@ final class ChatWorkflow: Workflow {
         toolCallSpecialTokens = DeepSeek4ToolCallParser.toolCallSpecialTokens
       } else if textGenerator is GLM5_3TextGenerator {
         toolCallSpecialTokens = GLM5_3ToolCallParser.toolCallSpecialTokens
+      } else if textGenerator is Inkling2SmallTextGenerator {
+        // Inkling 2 keeps only the visible text in a node's tokens.
+        toolCallSpecialTokens = [:]
       } else {
         toolCallSpecialTokens = Qwen3_5ToolCallParser.toolCallSpecialTokens
       }
@@ -2112,6 +2146,9 @@ final class ChatWorkflow: Workflow {
       case .glm_5_3_flash:
         safeTokenizer = GLM5_3TextGenerator.safeTokenizer
         toolCallSpecialTokens = GLM5_3ToolCallParser.toolCallSpecialTokens
+      case .inkling_2_small:
+        safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
+        toolCallSpecialTokens = [:]
       case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
         safeTokenizer = Qwen3_5TextGenerator.safeTokenizer
         toolCallSpecialTokens = Qwen3_5ToolCallParser.toolCallSpecialTokens
@@ -4142,5 +4179,132 @@ extension ChatWorkflow: BrowserWorkflowDelegate {
 
   func browserWorkflowDidChangeTabs(_ workflow: BrowserWorkflow) {
     settingsWorkflow.browserTabsDidChange()
+  }
+}
+
+/// Chat apps work with threads the way the drawer and the input do: a message opens its thread on
+/// screen and goes out as if typed there, waiting in the thread's queue while a turn runs.
+extension ChatWorkflow: MessagingBridgeDelegate {
+  func messagingBridgeThreads(_ bridge: MessagingBridge) -> [MessagingThread] {
+    // The drawer's projects and threads spell each project's path the same way.
+    let titles = Dictionary(
+      settingsWorkflow.projects.map { ($0.path, $0.title) },
+      uniquingKeysWith: { first, _ in first })
+    return settingsWorkflow.projectThreads.filter { $0.threadId >= 0 }.sorted {
+      $0.updatedAt > $1.updatedAt
+    }.map { thread in
+      let identifier = ProjectThreadIdentifier(thread: thread)
+      let status: MessagingThread.Status
+      switch thread.status {
+      case .idle: status = .idle
+      case .inProgress: status = .working
+      case .incomplete: status = .incomplete
+      case .new: status = .newReply
+      }
+      return MessagingThread(
+        identifier: identifier,
+        projectTitle: titles[thread.projectPath]
+          ?? URL(fileURLWithPath: thread.projectPath).lastPathComponent,
+        title: thread.title ?? "", status: status, lastMessage: thread.lastMessage)
+    }
+  }
+
+  func messagingBridgeWorkspaceFolder(_ bridge: MessagingBridge) -> String {
+    settingsWorkflow.workspaceFolderURL.standardizedFileURL.resolvingSymlinksInPath().path
+  }
+
+  func messagingBridge(
+    _ bridge: MessagingBridge, send text: String, to thread: ProjectThreadIdentifier
+  ) -> MessagingSendResult {
+    guard codeAgentWrapper != nil else {
+      return .failed(LocalizedString.forKey("no_model_selected_detail"))
+    }
+    openForMessaging(
+      ProjectController.Thread(projectPath: thread.projectPath, threadId: thread.threadId))
+    guard let projectURL, let projectHistoryManager,
+      ProjectThreadIdentifier(projectURL: projectURL, threadId: projectHistoryManager.threadId)
+        == thread,
+      let projectThread = projectHistoryManager.thread(id: thread.threadId)
+    else { return .failed(LocalizedString.forKey("thread_gone_detail")) }
+    // As on the input, a message to a thread with a turn running, or paused, waits behind it.
+    let isQueued =
+      chatInputController.sendState != .idle || projectThread.hasIncompleteResponse
+    // It goes out as if typed into the input, which gets its draft back whether or not it went.
+    let draft = chatInputController.text
+    if textHistoryManager.currentPositiveText != text {
+      textHistoryManager.pushChange(
+        range: NSRange(location: 0, length: textHistoryManager.currentPositiveText.utf16.count),
+        replacementText: text, textType: .positiveText)
+    }
+    let didSend = didTapSend(text, imagePaths: [])
+    if textHistoryManager.currentPositiveText != draft {
+      textHistoryManager.pushChange(
+        range: NSRange(location: 0, length: textHistoryManager.currentPositiveText.utf16.count),
+        replacementText: draft, textType: .positiveText)
+      updateTextHistoryPointers()
+    }
+    guard didSend else { return .failed(LocalizedString.forKey("send_failed_detail")) }
+    let title = projectThread.title ?? ""
+    return isQueued ? .queued(thread, title: title) : .started(thread, title: title)
+  }
+
+  func messagingBridge(
+    _ bridge: MessagingBridge, startThreadWith text: String, title: String,
+    inProject projectPath: String
+  ) -> MessagingSendResult {
+    guard codeAgentWrapper != nil else {
+      return .failed(LocalizedString.forKey("no_model_selected_detail"))
+    }
+    openForMessaging(ProjectController.Thread(projectPath: projectPath, threadId: -1))
+    guard let projectURL,
+      projectURL.standardizedFileURL.resolvingSymlinksInPath().path == projectPath,
+      projectHistoryManager?.threadId == -1
+    else { return .failed(LocalizedString.forKey("send_failed_detail")) }
+    // It goes out as if typed into the input, which gets its draft back whether or not it went.
+    let draft = chatInputController.text
+    if textHistoryManager.currentPositiveText != text {
+      textHistoryManager.pushChange(
+        range: NSRange(location: 0, length: textHistoryManager.currentPositiveText.utf16.count),
+        replacementText: text, textType: .positiveText)
+    }
+    let didSend = didTapSend(text, imagePaths: [])
+    if textHistoryManager.currentPositiveText != draft {
+      textHistoryManager.pushChange(
+        range: NSRange(location: 0, length: textHistoryManager.currentPositiveText.utf16.count),
+        replacementText: draft, textType: .positiveText)
+      updateTextHistoryPointers()
+    }
+    guard didSend, let projectHistoryManager, projectHistoryManager.threadId >= 0 else {
+      return .failed(LocalizedString.forKey("send_failed_detail"))
+    }
+    let threadId = projectHistoryManager.threadId
+    projectHistoryManager.renameThread(id: threadId, title: title)
+    return .started(
+      ProjectThreadIdentifier(projectURL: projectURL, threadId: threadId), title: title)
+  }
+
+  func messagingBridge(_ bridge: MessagingBridge, stop thread: ProjectThreadIdentifier) -> Bool {
+    openForMessaging(
+      ProjectController.Thread(projectPath: thread.projectPath, threadId: thread.threadId))
+    guard let projectURL, let projectHistoryManager,
+      ProjectThreadIdentifier(projectURL: projectURL, threadId: projectHistoryManager.threadId)
+        == thread,
+      chatInputController.sendState == .sending
+    else { return false }
+    chatInputControllerDidTapStop(chatInputController)
+    return true
+  }
+
+  /// As picking the thread in the drawer does, unless it's already on screen.
+  private func openForMessaging(_ thread: ProjectController.Thread) {
+    if let projectURL, let projectHistoryManager,
+      ProjectThreadIdentifier(projectURL: projectURL, threadId: projectHistoryManager.threadId)
+        == ProjectThreadIdentifier(thread: thread),
+      onboardingWorkflow == nil, modelSpeedWorkflow == nil
+    {
+      return
+    }
+    selectThread(thread)
+    dismissSettings()
   }
 }

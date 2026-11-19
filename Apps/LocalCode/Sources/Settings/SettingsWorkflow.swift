@@ -156,9 +156,13 @@ final class SettingsWorkflow: Workflow {
   private var permittedDirectoriesSubscription: Workspace.Subscription?
   private var disabledPermittedDirectoriesSubscription: Workspace.Subscription?
   private var appDataDirectorySubscriptions = [Workspace.Subscription]()
+  private var messagingSubscriptions = [Workspace.Subscription]()
+  private var messagingStatusSubscription: AnyCancellable?
   private weak var drawThingsModelsFolderPicker: UnifiedDocumentPickerController?
   private weak var modelsFolderPicker: UnifiedDocumentPickerController?
   private weak var appDataDirectoryPicker: UnifiedDocumentPickerController?
+  private weak var permittedDirectoryPicker: UnifiedDocumentPickerController?
+  private weak var workspaceFolderPicker: UnifiedDocumentPickerController?
   private var communityTemplateWorkflow: CommunityTemplateWorkflow?
   /// The folder `appDataDirectoryPicker` asks for.
   private var requestedAppDataDirectory = AppDataDirectory.messages
@@ -187,7 +191,8 @@ final class SettingsWorkflow: Workflow {
     userInterfaceIdiom: UIUserInterfaceIdiom,
     queue: DispatchQueue,
     accountManager: AccountManager,
-    accountClient: AccountClient?, permittedDirectories: PermittedDirectories
+    accountClient: AccountClient?, permittedDirectories: PermittedDirectories,
+    messagingStatus: CurrentValueSubject<MessagingBridge.Status, Never>
   ) {
     self.workspace = workspace
     self.permittedDirectories = permittedDirectories
@@ -276,6 +281,90 @@ final class SettingsWorkflow: Workflow {
       }
     }
     refreshProtectedResourcePermissions()
+    messagingStatusSubscription = messagingStatus.receive(on: DispatchQueue.main).sink {
+      [weak self] status in
+      self?.kitSectionsController.messagingStatus = status
+    }
+    messagingSubscriptions = [
+      workspace.dictionary.subscribe("messaging_imessage_enabled", of: Bool.self) {
+        [weak self] value in
+        let isEnabled: Bool
+        switch value {
+        case .deleted: isEnabled = false
+        case .initial(let value): isEnabled = value ?? false
+        case .updated(let value): isEnabled = value
+        }
+        DispatchQueue.main.async { self?.kitSectionsController.isIMessageEnabled = isEnabled }
+      },
+      workspace.dictionary.subscribe("messaging_telegram_enabled", of: Bool.self) {
+        [weak self] value in
+        let isEnabled: Bool
+        switch value {
+        case .deleted: isEnabled = false
+        case .initial(let value): isEnabled = value ?? false
+        case .updated(let value): isEnabled = value
+        }
+        DispatchQueue.main.async {
+          self?.kitSectionsController.telegramSettings.isEnabled = isEnabled
+        }
+      },
+      workspace.dictionary.subscribe("messaging_telegram_bot_token", of: String.self) {
+        [weak self] value in
+        let token: String
+        switch value {
+        case .deleted: token = ""
+        case .initial(let value): token = value ?? ""
+        case .updated(let value): token = value
+        }
+        DispatchQueue.main.async { self?.kitSectionsController.telegramSettings.botToken = token }
+      },
+      workspace.dictionary.subscribe("messaging_telegram_paired_senders", of: [String].self) {
+        [weak self] value in
+        let senders: [String]
+        switch value {
+        case .deleted: senders = []
+        case .initial(let value): senders = value ?? []
+        case .updated(let value): senders = value
+        }
+        DispatchQueue.main.async {
+          self?.kitSectionsController.telegramSettings.pairedAccountCount = senders.count
+        }
+      },
+      workspace.dictionary.subscribe("messaging_discord_enabled", of: Bool.self) {
+        [weak self] value in
+        let isEnabled: Bool
+        switch value {
+        case .deleted: isEnabled = false
+        case .initial(let value): isEnabled = value ?? false
+        case .updated(let value): isEnabled = value
+        }
+        DispatchQueue.main.async {
+          self?.kitSectionsController.discordSettings.isEnabled = isEnabled
+        }
+      },
+      workspace.dictionary.subscribe("messaging_discord_bot_token", of: String.self) {
+        [weak self] value in
+        let token: String
+        switch value {
+        case .deleted: token = ""
+        case .initial(let value): token = value ?? ""
+        case .updated(let value): token = value
+        }
+        DispatchQueue.main.async { self?.kitSectionsController.discordSettings.botToken = token }
+      },
+      workspace.dictionary.subscribe("messaging_discord_paired_senders", of: [String].self) {
+        [weak self] value in
+        let senders: [String]
+        switch value {
+        case .deleted: senders = []
+        case .initial(let value): senders = value ?? []
+        case .updated(let value): senders = value
+        }
+        DispatchQueue.main.async {
+          self?.kitSectionsController.discordSettings.pairedAccountCount = senders.count
+        }
+      },
+    ]
     botModeSubscription = workspace.dictionary.subscribe("bot_mode", of: Bool.self) {
       [weak self] value in
       guard let self else { return }
@@ -1921,6 +2010,8 @@ extension SettingsWorkflow: ProjectControllerDelegate {
       safeTokenizer = DeepSeek4_1TextGenerator.safeTokenizer
     case .glm_5_3_flash:
       safeTokenizer = GLM5_3TextGenerator.safeTokenizer
+    case .inkling_2_small:
+      safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
     case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
       safeTokenizer = Qwen3_5TextGenerator.safeTokenizer
     }
@@ -2047,6 +2138,8 @@ extension SettingsWorkflow: ProjectControllerDelegate {
           unsafeTokenizer = DeepSeek4_1TextGenerator.unsafeTokenizer
         case .glm_5_3_flash:
           unsafeTokenizer = GLM5_3TextGenerator.unsafeTokenizer
+        case .inkling_2_small:
+          unsafeTokenizer = Inkling2SmallTextGenerator.unsafeTokenizer
         }
         contents = unsafeTokenizer.decode(ProjectHistoryManager.context(history: history).tokens)
         pathExtension = "txt"
@@ -2133,6 +2226,7 @@ extension SettingsWorkflow: ProjectControllerDelegate {
       currentFolder.map { URL(fileURLWithPath: $0) } ?? workspaceFolderURL
     documentPicker.allowsMultipleSelection = false
     documentPicker.delegate = self
+    workspaceFolderPicker = documentPicker
     viewController.present(documentPicker, animated: true)
   }
 
@@ -2378,6 +2472,16 @@ extension SettingsWorkflow: KitSectionsControllerDelegate {
     permittedDirectories.revoke(path)
   }
 
+  func kitSectionsControllerDidSelectAddDirectory(_ controller: KitSectionsController) {
+    let documentPicker = UnifiedDocumentPickerController(forOpeningContentTypes: [.folder])
+    documentPicker.title = LocalizedString.forKey("permit_folder_access")
+    documentPicker.prompt = LocalizedString.forKey("grant")
+    documentPicker.allowsMultipleSelection = true
+    documentPicker.delegate = self
+    permittedDirectoryPicker = documentPicker
+    viewController.present(documentPicker, animated: true)
+  }
+
   func kitSectionsController(
     _ controller: KitSectionsController, didSelectPermission permission: PermissionState,
     for directory: AppDataDirectory
@@ -2387,6 +2491,7 @@ extension SettingsWorkflow: KitSectionsControllerDelegate {
       guard controller.appDataPermissions[directory] != .authorized else { return }
       let documentPicker = UnifiedDocumentPickerController(forOpeningContentTypes: [.folder])
       documentPicker.title = LocalizedString.forKey("permit_folder_access")
+      documentPicker.prompt = LocalizedString.forKey("grant")
       documentPicker.directoryURL = directory.url
       documentPicker.allowsMultipleSelection = false
       documentPicker.delegate = self
@@ -2426,6 +2531,51 @@ extension SettingsWorkflow: KitSectionsControllerDelegate {
     case .notDetermined, .deniedBySystem:
       break
     }
+  }
+
+  func kitSectionsController(_ controller: KitSectionsController, didSetIMessageEnabled value: Bool)
+  {
+    workspace.dictionary["messaging_imessage_enabled", Bool.self] = value
+    // iMessage reads the Messages folder, which takes Local Code's own grant.
+    if value, controller.appDataPermissions[.messages] != .authorized {
+      kitSectionsController(controller, didSelectPermission: .authorized, for: .messages)
+    }
+  }
+
+  func kitSectionsController(_ controller: KitSectionsController, didSetTelegramEnabled value: Bool)
+  {
+    workspace.dictionary["messaging_telegram_enabled", Bool.self] = value
+  }
+
+  func kitSectionsController(
+    _ controller: KitSectionsController, didChangeTelegramBotToken token: String
+  ) {
+    let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    if workspace.dictionary["messaging_telegram_bot_token", String.self] != token {
+      workspace.dictionary["messaging_telegram_bot_token", String.self] = token
+    }
+  }
+
+  func kitSectionsControllerDidForgetTelegramPairedAccounts(_ controller: KitSectionsController) {
+    workspace.dictionary["messaging_telegram_paired_senders", [String].self] = []
+  }
+
+  func kitSectionsController(_ controller: KitSectionsController, didSetDiscordEnabled value: Bool)
+  {
+    workspace.dictionary["messaging_discord_enabled", Bool.self] = value
+  }
+
+  func kitSectionsController(
+    _ controller: KitSectionsController, didChangeDiscordBotToken token: String
+  ) {
+    let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    if workspace.dictionary["messaging_discord_bot_token", String.self] != token {
+      workspace.dictionary["messaging_discord_bot_token", String.self] = token
+    }
+  }
+
+  func kitSectionsControllerDidForgetDiscordPairedAccounts(_ controller: KitSectionsController) {
+    workspace.dictionary["messaging_discord_paired_senders", [String].self] = []
   }
 
   func kitSectionsControllerDidSelectDrawThingsModelsInApp(_ controller: KitSectionsController) {
@@ -2489,6 +2639,22 @@ extension SettingsWorkflow: UnifiedDocumentPickerControllerDelegate {
   func documentPicker(_ controller: UnifiedDocumentPickerController, didPickDocumentsAt urls: [URL])
   {
     dispatchPrecondition(condition: .onQueue(.main))
+    // A pick counts only for the picker its property still points to. On a Mac, folder pickers
+    // are modeless panels, so opening a second one replaces the property while the first is still
+    // open; the first one's pick is then ignored rather than saved as another setting.
+    if controller === permittedDirectoryPicker {
+      permittedDirectoryPicker = nil
+      for url in urls {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        // Choosing a folder here is as explicit as re-enabling it, so a saved folder that was
+        // set to Disabled comes back on instead of being refused.
+        permittedDirectories.setEnabled(
+          true, for: url.standardizedFileURL.resolvingSymlinksInPath().path)
+        try? permittedDirectories.add(url)
+      }
+      return
+    }
     guard let url = urls.first else { return }
     guard url.startAccessingSecurityScopedResource() else { return }
     defer { url.stopAccessingSecurityScopedResource() }
@@ -2522,7 +2688,8 @@ extension SettingsWorkflow: UnifiedDocumentPickerControllerDelegate {
     } else if controller === modelsFolderPicker {
       modelsFolderPicker = nil
       delegate?.settingsWorkflow(self, didSelectModelsFolder: url, bookmarkData: bookmarkData)
-    } else {
+    } else if controller === workspaceFolderPicker {
+      workspaceFolderPicker = nil
       workspace.dictionary["workspace_folder", Data.self] = bookmarkData
     }
   }

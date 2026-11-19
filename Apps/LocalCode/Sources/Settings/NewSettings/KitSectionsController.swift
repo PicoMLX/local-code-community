@@ -13,6 +13,16 @@ private enum KitSection: CaseIterable, Hashable {
   case photosPermission
   case calendarPermission
   case notesPermission
+  case iMessage
+  case telegram
+  case discord
+}
+
+/// A chat bot's settings, as Kit shows them.
+struct MessagingSettings: Equatable {
+  var isEnabled = false
+  var botToken = ""
+  var pairedAccountCount = 0
 }
 
 enum PermissionState: Equatable {
@@ -40,12 +50,22 @@ protocol KitSectionsControllerDelegate: AnyObject {
   func kitSectionsController(
     _ controller: KitSectionsController, didSetDirectoryEnabled value: Bool, path: String)
   func kitSectionsController(_ controller: KitSectionsController, didRemoveDirectory path: String)
+  func kitSectionsControllerDidSelectAddDirectory(_ controller: KitSectionsController)
   func kitSectionsController(
     _ controller: KitSectionsController, didSelectPermission permission: PermissionState,
     for directory: AppDataDirectory)
   func kitSectionsController(
     _ controller: KitSectionsController, didSelectPermission permission: PermissionState,
     for resource: ProtectedResource)
+  func kitSectionsController(_ controller: KitSectionsController, didSetIMessageEnabled value: Bool)
+  func kitSectionsController(_ controller: KitSectionsController, didSetTelegramEnabled value: Bool)
+  func kitSectionsController(
+    _ controller: KitSectionsController, didChangeTelegramBotToken token: String)
+  func kitSectionsControllerDidForgetTelegramPairedAccounts(_ controller: KitSectionsController)
+  func kitSectionsController(_ controller: KitSectionsController, didSetDiscordEnabled value: Bool)
+  func kitSectionsController(
+    _ controller: KitSectionsController, didChangeDiscordBotToken token: String)
+  func kitSectionsControllerDidForgetDiscordPairedAccounts(_ controller: KitSectionsController)
 }
 
 final class KitSectionsController {
@@ -54,10 +74,17 @@ final class KitSectionsController {
   private let workspace: SQLiteWorkspace
   private var isViewLoaded = false
   private var verticalScrollIndicatorController: VerticalScrollIndicatorController? = nil
-  private let sections: [KitSection] = [
-    .drawThings, .permittedDirectories, .messagesPermission, .mailPermission, .photosPermission,
-    .calendarPermission, .notesPermission,
-  ]
+  private let sections: [KitSection] = {
+    var sections: [KitSection] = [
+      .drawThings, .permittedDirectories, .messagesPermission, .mailPermission, .photosPermission,
+      .calendarPermission, .notesPermission,
+    ]
+    // Messages' database and scripting are only on a Mac.
+    #if targetEnvironment(macCatalyst)
+      sections.append(.iMessage)
+    #endif
+    return sections + [.telegram, .discord]
+  }()
   private var displayingSections: [KitSection: any SettingsViewObservable] = [:]
   private var sectionViewModifiers: [KitSection: any SettingsViewModifying] = [:]
   var drawThingsModelsFolder: String? {
@@ -69,6 +96,7 @@ final class KitSectionsController {
   var isPermitEnabled = true {
     didSet {
       guard isPermitEnabled != oldValue else { return }
+      addDirectoryButton.isEnabled = isPermitEnabled
       updateKitSections()
     }
   }
@@ -98,6 +126,30 @@ final class KitSectionsController {
       updateKitSections()
     }
   }
+  var isIMessageEnabled = false {
+    didSet {
+      guard isIMessageEnabled != oldValue else { return }
+      updateKitSections()
+    }
+  }
+  var telegramSettings = MessagingSettings() {
+    didSet {
+      guard telegramSettings != oldValue else { return }
+      updateKitSections()
+    }
+  }
+  var discordSettings = MessagingSettings() {
+    didSet {
+      guard discordSettings != oldValue else { return }
+      updateKitSections()
+    }
+  }
+  var messagingStatus = MessagingBridge.Status(pairingCode: "") {
+    didSet {
+      guard messagingStatus != oldValue else { return }
+      updateKitSections()
+    }
+  }
 
   private lazy var scrollView: UIScrollView = {
     let scrollView = UIScrollView(frame: .zero)
@@ -119,6 +171,30 @@ final class KitSectionsController {
     stackView.alignment = .fill
     stackView.spacing = Theme.current.individualStackViewItemSpacing
     return stackView
+  }()
+  /// Ends Permitted Folders' title row and asks the user for a folder to permit. While Enable is
+  /// off, permitting is blocked, so the button is too.
+  private lazy var addDirectoryButton: UIButton = {
+    let button = UIButton(type: .custom)
+    var configuration = UIButton.Configuration.filled()
+    configuration.baseBackgroundColor = Theme.current.primaryContentBackgroundColor
+    configuration.baseForegroundColor = Theme.current.primaryContentColor
+    configuration.background.cornerRadius = Theme.current.itemCornerRadius
+    // A template image follows the foreground color, so UIKit grays it out while disabled.
+    configuration.image = #imageLiteral(resourceName: "plus-large").withRenderingMode(
+      .alwaysTemplate)
+    button.configuration = configuration
+    button.accessibilityLabel = LocalizedString.forKey("add_a_folder")
+    button.isEnabled = isPermitEnabled
+    button.addAction(
+      UIAction { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.kitSectionsControllerDidSelectAddDirectory(self)
+      }, for: .touchUpInside)
+    button.snp.makeConstraints { make in
+      make.size.equalTo(Theme.current.buttonHeight)
+    }
+    return button
   }()
 
   init(workspace: SQLiteWorkspace) {
@@ -180,6 +256,170 @@ final class KitSectionsController {
       return protectedResourcePermissionSection(.calendar)
     case .notesPermission:
       return appDataPermissionSection(.notes)
+    case .iMessage:
+      return iMessageSection()
+    case .telegram:
+      return telegramSection()
+    case .discord:
+      return discordSection()
+    }
+  }
+
+  private func iMessageSection() -> SettingsSectionItem {
+    let (status, statusText, warning) = Self.status(
+      isEnabled: isIMessageEnabled, of: messagingStatus.iMessage,
+      notStarted: LocalizedString.forKey("needs_messages_permission"),
+      // Nothing to answer until the account writes to itself.
+      connectedWithoutName: LocalizedString.forKey("message_yourself_to_start"))
+    return SettingsSectionItem(
+      settingsItems: [
+        SettingsStatusSwitchItem(
+          value: isIMessageEnabled, status: status, statusText: statusText, warning: warning
+        ) { [weak self] value in
+          guard let self else { return }
+          self.delegate?.kitSectionsController(self, didSetIMessageEnabled: value)
+        }
+      ], title: "iMessage", detail: LocalizedString.forKey("imessage_detail"),
+      lookUpKey: "local_code_imessage_detail_hidden", workspace: workspace)
+  }
+
+  private func telegramSection() -> SettingsSectionItem {
+    let (status, statusText, warning) = Self.status(
+      isEnabled: telegramSettings.isEnabled, of: messagingStatus.telegram,
+      notStarted: LocalizedString.forKey("needs_a_bot_token"),
+      connectedWithoutName: LocalizedString.forKey("connected"))
+    // While Telegram is off, the section shows only its switch.
+    let isOff = !telegramSettings.isEnabled
+    var botTokenTitle = SettingsPlainTextItem(
+      leadingText: LocalizedString.forKey("bot_token"), trailingText: "")
+    botTokenTitle.isHidden = isOff
+    var botToken = SettingsTextFieldItem(
+      value: telegramSettings.botToken,
+      placeholderText: LocalizedString.forKey("enter_your_bot_token"),
+      didChangeText: { [weak self] text in
+        guard let self else { return }
+        self.delegate?.kitSectionsController(self, didChangeTelegramBotToken: text)
+      })
+    botToken.isHidden = isOff
+    // The code is for the bot once it's connected.
+    var pairingCode = SettingsPlainTextItem(
+      leadingText: LocalizedString.forKey("pairing_code"),
+      trailingText: messagingStatus.pairingCode)
+    pairingCode.isHidden = true
+    if case .connected = messagingStatus.telegram, !isOff {
+      pairingCode.isHidden = false
+    }
+    var pairedAccounts = SettingsButtonItem(
+      value: telegramSettings.pairedAccountCount, title: LocalizedString.forKey("paired_accounts"),
+      showsMenuAsPrimaryAction: true,
+      makeButtonsUI: { [weak self] count, button in
+        button?.menu = UIMenu(children: [
+          UIAction(
+            title: LocalizedString.forKey("forget_paired_accounts"), attributes: .destructive
+          ) { [weak self] _ in
+            guard let self else { return }
+            self.delegate?.kitSectionsControllerDidForgetTelegramPairedAccounts(self)
+          }
+        ])
+        button?.setTitle(String(count), for: .normal)
+      })
+    pairedAccounts.isHidden = isOff || telegramSettings.pairedAccountCount == 0
+    return SettingsSectionItem(
+      settingsItems: [
+        SettingsStatusSwitchItem(
+          value: telegramSettings.isEnabled, status: status, statusText: statusText,
+          warning: warning
+        ) { [weak self] value in
+          guard let self else { return }
+          self.delegate?.kitSectionsController(self, didSetTelegramEnabled: value)
+        },
+        botTokenTitle,
+        botToken,
+        pairingCode,
+        pairedAccounts,
+      ], title: "Telegram", detail: LocalizedString.forKey("telegram_detail"),
+      lookUpKey: "local_code_telegram_detail_hidden", workspace: workspace)
+  }
+
+  private func discordSection() -> SettingsSectionItem {
+    let (status, statusText, warning) = Self.status(
+      isEnabled: discordSettings.isEnabled, of: messagingStatus.discord,
+      notStarted: LocalizedString.forKey("needs_a_bot_token"),
+      connectedWithoutName: LocalizedString.forKey("connected"))
+    // While Discord is off, the section shows only its switch.
+    let isOff = !discordSettings.isEnabled
+    var botTokenTitle = SettingsPlainTextItem(
+      leadingText: LocalizedString.forKey("bot_token"), trailingText: "")
+    botTokenTitle.isHidden = isOff
+    var botToken = SettingsTextFieldItem(
+      value: discordSettings.botToken,
+      placeholderText: LocalizedString.forKey("enter_your_bot_token"),
+      didChangeText: { [weak self] text in
+        guard let self else { return }
+        self.delegate?.kitSectionsController(self, didChangeDiscordBotToken: text)
+      })
+    botToken.isHidden = isOff
+    // The code is for the bot once it's connected.
+    var pairingCode = SettingsPlainTextItem(
+      leadingText: LocalizedString.forKey("pairing_code"),
+      trailingText: messagingStatus.pairingCode)
+    pairingCode.isHidden = true
+    if case .connected = messagingStatus.discord, !isOff {
+      pairingCode.isHidden = false
+    }
+    var pairedAccounts = SettingsButtonItem(
+      value: discordSettings.pairedAccountCount, title: LocalizedString.forKey("paired_accounts"),
+      showsMenuAsPrimaryAction: true,
+      makeButtonsUI: { [weak self] count, button in
+        button?.menu = UIMenu(children: [
+          UIAction(
+            title: LocalizedString.forKey("forget_paired_accounts"), attributes: .destructive
+          ) { [weak self] _ in
+            guard let self else { return }
+            self.delegate?.kitSectionsControllerDidForgetDiscordPairedAccounts(self)
+          }
+        ])
+        button?.setTitle(String(count), for: .normal)
+      })
+    pairedAccounts.isHidden = isOff || discordSettings.pairedAccountCount == 0
+    return SettingsSectionItem(
+      settingsItems: [
+        SettingsStatusSwitchItem(
+          value: discordSettings.isEnabled, status: status, statusText: statusText, warning: warning
+        ) { [weak self] value in
+          guard let self else { return }
+          self.delegate?.kitSectionsController(self, didSetDiscordEnabled: value)
+        },
+        botTokenTitle,
+        botToken,
+        pairingCode,
+        pairedAccounts,
+      ], title: "Discord", detail: LocalizedString.forKey("discord_detail"),
+      lookUpKey: "local_code_discord_detail_hidden", workspace: workspace)
+  }
+
+  /// How the Enable switch shows a chat app's connection, and the error to show under it.
+  private static func status(
+    isEnabled: Bool, of connection: MessagingConnection?, notStarted: String,
+    connectedWithoutName: String
+  ) -> (SettingsStatusSwitchItem.Status, String, SettingsWarning?) {
+    guard isEnabled else { return (.off, "", nil) }
+    switch connection {
+    case nil:
+      return (.pending, notStarted, nil)
+    case .connecting:
+      return (.pending, LocalizedString.forKey("connecting"), nil)
+    case .connected(let name):
+      return (
+        .connected,
+        name.isEmpty ? connectedWithoutName : LocalizedString.format(key: "connected_as", name),
+        nil
+      )
+    case .failed(let reason):
+      return (
+        .failed, LocalizedString.forKey("not_connected"),
+        SettingsWarning(text: reason, severity: .error)
+      )
     }
   }
 
@@ -208,7 +448,8 @@ final class KitSectionsController {
         directories,
       ], title: LocalizedString.forKey("permitted_folders"),
       detail: LocalizedString.forKey("permitted_folders_detail"),
-      lookUpKey: "local_code_permitted_folders_detail_hidden", workspace: workspace)
+      lookUpKey: "local_code_permitted_folders_detail_hidden",
+      titleAccessoryView: addDirectoryButton, workspace: workspace)
   }
 
   private func appDataPermissionSection(_ directory: AppDataDirectory) -> SettingsSectionItem {
