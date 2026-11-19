@@ -221,11 +221,18 @@ The menu-bar icon is dimmed when idle and lit while jobs run, with a check while
 - running jobs, each with the first line of the command, the project, elapsed time, a tier badge, and Kill;
 - processes left running, each with the job that started it and when that job finished;
 - each project, with Approve for me and Forget rules for this project;
+- Keep this Mac awake, with System only and System and display, and Allow sleep while one is on;
 - Reload environment and Quit.
 
 The menu does not list finished jobs or the reviewer's approvals.
 
 Quitting Computer stops its jobs, so Quit asks first when jobs are running.
+
+Computer keeps the Mac from sleeping when idle while its jobs run or processes they left are still running, so background jobs and development servers keep going after the agent's turn ends. The display can still sleep. Local Code's own setting covers agent turns and model downloads.
+
+Keep this Mac awake does the same all the time: System only, or System and display to keep the display on too. Allow sleep goes back to only while jobs run. Computer remembers the choice and, since it starts at login, keeps the Mac awake again after a restart.
+
+Both are `ProcessInfo` activities, `.idleSystemSleepDisabled` with `.idleDisplaySleepDisabled` for the display, which hold the same assertions as `caffeinate -i` and `-di` and end with Computer even if it crashes. Neither stops sleep when the lid closes.
 
 ## Connection and launch
 
