@@ -242,15 +242,31 @@ public typealias PicoLocalCodeTokenCallback =
 
 /// One DeepSeek 4.1 model. Opening is cheap: the weights load on the first generation.
 private final class NativeTokenSession {
+  /// Held while the model generates, through either entry point.
   let lock = NSLock()
   let graph = DynamicGraph()
   let stream = StreamContext(.GPU(0))
   var generator: DeepSeek4_1TextGenerator
+  /// Conversations between chat requests. Each agent holds the KV cache of the prompt it last
+  /// evaluated, so a request that goes on with its conversation evaluates only what is new.
+  /// Guarded by `lock`.
+  var idleAgents = ResponsesAgentPool<ResponsesAgent>()
+  /// Lays out the chat requests' prompts. Each agent has an adapter of its own, which holds its
+  /// caches, so this one is free while a request generates.
+  let promptAdapter: DeepSeekResponsesModelAdapter<DeepSeek4_1TextGenerator>
+  let promptLock = NSLock()
 
   init(files: NativeGenerationRuntime.Files) {
     generator = DeepSeek4_1TextGenerator(
       filePath: files.checkpoint, engramFilePath: files.engram, drafterFile: files.drafter)
     graph.maxConcurrency = .limit(4)
+    promptAdapter = DeepSeekResponsesModelAdapter(textGenerator: generator, projectPath: nil)
+  }
+
+  func makeAgent() -> ResponsesAgent {
+    ResponsesAgent(
+      adapter: DeepSeekResponsesModelAdapter(textGenerator: generator, projectPath: nil),
+      graph: graph, streamContext: stream, timeSlice: 1, activeTurnCount: ManagedAtomic(1))
   }
 }
 
@@ -278,12 +294,13 @@ public func picoLocalCodeOpen(
   }
 }
 
-/// Unloads the weights. No request may be running.
+/// Unloads the weights and the conversations' KV caches. No request may be running.
 @_cdecl("pico_local_code_close_v2")
 public func picoLocalCodeClose(_ handle: UnsafeMutableRawPointer?) {
   guard let handle else { return }
   let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeRetainedValue()
   session.lock.lock()
+  for agent in session.idleAgents.removeAll() { agent.unloadCaches() }
   session.generator.unload()
   session.lock.unlock()
 }
@@ -449,5 +466,239 @@ public func picoLocalCodeGenerateTokensNamingStop(
     handle, prompt, promptCount, maxTokens, deterministic, callback, context, usage)
   usage?[4] = status == 0 ? Int64(endOfSentenceToken) : -1
   return status
+}
+
+// MARK: - Chat entry points
+
+/// The most conversations a model keeps KV caches for between chat requests. Each holds the cache
+/// of its whole prompt until `pico_local_code_trim_v1` lets it go or a newer one takes its place.
+private let maximumIdleConversations = 4
+
+/// A chat request as a turn: its conversation laid out in the model's chat format.
+private struct NativeChatTurn {
+  let request: ResponsesRequest
+  let model: String
+  let prompt: ResponsesPrompt
+  let thinkingBudget: Int
+
+  init(body: Data, session: NativeTokenSession) throws {
+    request = try ResponsesRequest(chatCompletionsBody: body)
+    let object = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+    guard let model = object?["model"] as? String, !model.isEmpty else {
+      throw NativeRequestError.invalid("Set the request's model ID.")
+    }
+    guard !request.hasImages else {
+      throw NativeRequestError.invalid("The native Local Code bridge accepts text input.")
+    }
+    self.model = model
+    switch request.thinking {
+    case .disabled?: thinkingBudget = 0
+    case .enabled(let budgetOverride)?: thinkingBudget = min(budgetOverride ?? 131_072, 262_144)
+    case nil: thinkingBudget = 131_072
+    }
+    session.promptLock.lock()
+    defer { session.promptLock.unlock() }
+    prompt = session.promptAdapter.prompt(
+      for: request, reasoningEffort: request.reasoningEffort ?? .high, isThinking: thinkingBudget > 0)
+  }
+}
+
+/// Hands each Chat Completions chunk to the callback as its JSON text, and an error as
+/// `{"error": {...}}`.
+private final class NativeChatTransport: ResponsesTransport {
+  private let callback: PicoLocalCodeEventCallback
+  private let context: UnsafeMutableRawPointer?
+  private(set) var isDisconnected = false
+  /// Whether the response reached its end, `[DONE]`.
+  private(set) var didFinish = false
+  private(set) var didFail = false
+
+  init(callback: PicoLocalCodeEventCallback, context: UnsafeMutableRawPointer?) {
+    self.callback = callback
+    self.context = context
+  }
+
+  func beginEventStream() {}
+  func sendKeepAlive() {}
+  func close() {}
+
+  // The bridge streams, so a whole response only ever arrives as a failure.
+  func respond(status: Int, contentType: String, body: Data) {
+    didFail = true
+    deliver(body)
+  }
+
+  func sendEvent(name: String?, data: Data) {
+    if data == Data("[DONE]".utf8) {
+      didFinish = true
+      return
+    }
+    if (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] != nil {
+      didFail = true
+    }
+    deliver(data)
+  }
+
+  func fail(code: String, message: String) {
+    didFail = true
+    let body = ["error": ["type": "invalid_request_error", "code": code, "message": message]]
+    deliver((try? JSONSerialization.data(withJSONObject: body)) ?? Data())
+  }
+
+  /// Asks the callback, with no chunk, whether the request should go on.
+  func poll() {
+    guard !isDisconnected else { return }
+    isDisconnected = callback(context, nil) == 0
+  }
+
+  private func deliver(_ data: Data) {
+    guard !isDisconnected else { return }
+    String(decoding: data, as: UTF8.self).withCString { string in
+      isDisconnected = callback(context, string) == 0
+    }
+  }
+}
+
+/// Keeps what a turn's end says its agent's KV cache holds.
+private final class NativeTurnObserver: ResponsesAgentDelegate {
+  var retainedPrompt = ResponsesPrompt()
+
+  func responsesAgent(_ agent: ResponsesAgent, didUpdate progress: ResponsesAgent.Progress) {}
+
+  func responsesAgent(_ agent: ResponsesAgent, didFinish summary: ResponsesAgent.Summary) {
+    retainedPrompt = summary.retainedPrompt
+  }
+}
+
+/// Runs one turn of a conversation given as an OpenAI Chat Completions request body: the model's
+/// own chat format lays out the messages and tools, and its own parser splits the reply. Calls
+/// `callback` synchronously with each streamed `chat.completion.chunk`, the usage chunk last, as
+/// JSON text borrowed for the call. A call with nil asks whether the request should go on. Return
+/// 0 to cancel. A failure arrives as `{"error": {...}}`.
+///
+/// A conversation that goes on from an earlier request's reply skips the prompt that request
+/// evaluated: the model keeps the KV caches of its last few conversations.
+///
+/// Returns 0 when the turn finished, 1 when the callback cancelled and 2 for a failure. Requests
+/// to one model run one at a time, and one model generates at a time across the process.
+@_cdecl("pico_local_code_chat_v1")
+public func picoLocalCodeChat(
+  _ handle: UnsafeMutableRawPointer?, _ requestJSON: UnsafePointer<CChar>?,
+  _ callback: PicoLocalCodeEventCallback?, _ context: UnsafeMutableRawPointer?
+) -> Int32 {
+  guard let callback else { return 2 }
+  let transport = NativeChatTransport(callback: callback, context: context)
+  guard let handle, let requestJSON, let body = String(validatingCString: requestJSON) else {
+    transport.fail(code: "invalid_request", message: "Pass a model handle and a UTF-8 request.")
+    return 2
+  }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
+  let turn: NativeChatTurn
+  do {
+    turn = try NativeChatTurn(body: Data(body.utf8), session: session)
+  } catch ResponsesRequestError.invalid(let message) {
+    transport.fail(code: "invalid_request", message: message)
+    return 2
+  } catch ResponsesRequestError.unsupported(_, let message) {
+    transport.fail(code: "unsupported_parameter", message: message)
+    return 2
+  } catch {
+    transport.fail(code: "invalid_request", message: error.localizedDescription)
+    return 2
+  }
+
+  session.lock.lock()
+  defer { session.lock.unlock() }
+  inferenceGate.lock()
+  defer { inferenceGate.unlock() }
+
+  let reused =
+    session.idleAgents.takeAgent(continuing: turn.prompt)
+    ?? session.idleAgents.takeAgent(supersededBy: turn.prompt)
+  if reused == nil, session.idleAgents.count >= maximumIdleConversations,
+    let expired = session.idleAgents.expire()
+  {
+    expired.unloadCaches()
+  }
+  let agent = reused ?? session.makeAgent()
+  let observer = NativeTurnObserver()
+  agent.delegate = observer
+  let writer = ChatCompletionsResponseWriter(
+    transport: transport, isStreaming: true, includesUsage: true, model: turn.model)
+  writer.start()
+  agent.runSynchronously(
+    ResponsesAgent.Request(
+      request: turn.request, prompt: turn.prompt, thinkingBudget: turn.thinkingBudget,
+      writer: writer, transport: transport)
+  ) { _, _ in
+    transport.poll()
+    return transport.isDisconnected ? .abort : .continue
+  }
+  agent.delegate = nil
+
+  // The conversation as the request gave it, without the reply's opening, which is what a later
+  // request repeats when it asks again.
+  let replyOpening = agent.adapter.replyOpening(isThinking: turn.thinkingBudget > 0)
+  let conversation = turn.prompt.prefix(max(0, turn.prompt.tokens.count - replyOpening.count))
+  if !observer.retainedPrompt.tokens.isEmpty {
+    session.idleAgents.add(
+      agent, prompt: observer.retainedPrompt, conversation: conversation, wasReused: reused != nil)
+  } else {
+    agent.unloadCaches()
+  }
+  if transport.isDisconnected { return 1 }
+  return transport.didFinish && !transport.didFail ? 0 : 2
+}
+
+/// The prompt tokens a Chat Completions request holds once laid out in the model's chat format,
+/// counting those a cache would supply, or -1 after writing the reason to `error`.
+@_cdecl("pico_local_code_count_chat_tokens_v1")
+public func picoLocalCodeCountChatTokens(
+  _ handle: UnsafeMutableRawPointer?, _ requestJSON: UnsafePointer<CChar>?,
+  _ error: UnsafeMutablePointer<CChar>?, _ errorCapacity: Int32
+) -> Int32 {
+  guard let handle, let requestJSON, let body = String(validatingCString: requestJSON) else {
+    copy("Pass a model handle and a UTF-8 request.", to: error, capacity: errorCapacity)
+    return -1
+  }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
+  do {
+    return Int32(clamping: try NativeChatTurn(body: Data(body.utf8), session: session).prompt.tokens.count)
+  } catch ResponsesRequestError.invalid(let message) {
+    copy(message, to: error, capacity: errorCapacity)
+  } catch ResponsesRequestError.unsupported(_, let message) {
+    copy(message, to: error, capacity: errorCapacity)
+  } catch let failure {
+    copy(failure.localizedDescription, to: error, capacity: errorCapacity)
+  }
+  return -1
+}
+
+/// Lets go of the KV caches the model keeps for its conversations between chat requests, waiting
+/// for a running request first. Returns the bytes this process's footprint fell by.
+@_cdecl("pico_local_code_trim_v1")
+public func picoLocalCodeTrim(_ handle: UnsafeMutableRawPointer?) -> Int64 {
+  guard let handle else { return 0 }
+  let session = Unmanaged<NativeTokenSession>.fromOpaque(handle).takeUnretainedValue()
+  session.lock.lock()
+  defer { session.lock.unlock() }
+  let agents = session.idleAgents.removeAll()
+  guard !agents.isEmpty else { return 0 }
+  let before = physicalFootprint()
+  for agent in agents { agent.unloadCaches() }
+  return max(0, before - physicalFootprint())
+}
+
+/// The memory this process holds, as the system charges it, GPU buffers included.
+private func physicalFootprint() -> Int64 {
+  var info = task_vm_info_data_t()
+  var count = mach_msg_type_number_t(
+    MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+  let result = withUnsafeMutablePointer(to: &info) {
+    $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+      task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+    }
+  }
+  return result == KERN_SUCCESS ? Int64(info.phys_footprint) : 0
 }
 #endif

@@ -8,3 +8,6 @@ _pico_local_code_tokenize_v3
 _pico_local_code_detokenize_v2
 _pico_local_code_generate_tokens_v2
 _pico_local_code_generate_tokens_v3
+_pico_local_code_chat_v1
+_pico_local_code_count_chat_tokens_v1
+_pico_local_code_trim_v1
