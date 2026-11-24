@@ -5,28 +5,34 @@ import RemoteAPI
 struct OnboardingState {
   static let threadIdentifier: Int64 = -2
 
-  /// The local models offered in onboarding: both DeepSeek variants and the one Qwen variant
-  /// that suits this much memory, then Inkling 2 Small. The first is preselected, which Inkling
-  /// never is.
+  /// The local models offered in onboarding: both DeepSeek variants and the one Inkling 2 Mini
+  /// variant that suits this much memory, then Inkling 2 Small. The first is preselected:
+  /// Inkling 2 Mini below 64 GiB, DeepSeek from there. Inkling 2 Small never is.
   static func offeredLocalModels(physicalMemory: UInt64) -> [String] {
     let gibibyte: UInt64 = 1_024 * 1_024 * 1_024
     let deepSeek41 = "deepseek_4.1_flash_1017_i2x.ckpt"
     let deepSeek4 = "deepseek_4_flash_0731_i2x.ckpt"
-    // Leave room beyond the weights for Qwen's roughly 7 GiB context cache and the OS. The
-    // 8-bit variant is never offered here; it is only in the model list.
-    let qwen =
-      physicalMemory >= 32 * gibibyte ? "qwen_3.8_27b_i4x.ckpt" : "qwen_3.8_27b_i2x.ckpt"
-    let inkling = "inkling_2_small_i2x.ckpt"
+    let inklingMini =
+      physicalMemory >= 32 * gibibyte ? "inkling_2_mini_i4x.ckpt" : "inkling_2_mini_i3x.ckpt"
+    let inklingSmall = "inkling_2_small_i2x.ckpt"
     if physicalMemory >= 96 * gibibyte {
-      return [deepSeek41, deepSeek4, qwen, inkling]
+      return [deepSeek41, deepSeek4, inklingMini, inklingSmall]
     } else if physicalMemory >= 64 * gibibyte {
-      return [deepSeek4, deepSeek41, qwen, inkling]
+      return [deepSeek4, deepSeek41, inklingMini, inklingSmall]
     }
-    return [qwen, deepSeek41, deepSeek4, inkling]
+    return [inklingMini, deepSeek41, deepSeek4, inklingSmall]
   }
 
   enum Step: Int, CaseIterable {
-    case welcome, model, account, finished
+    case welcome, model, account, readingStyle, finished
+  }
+
+  /// A message text size offered on the reading style page. The raw value is the message zoom
+  /// in percent.
+  enum TextSize: Int, CaseIterable {
+    case smaller = 90
+    case normal = 100
+    case bigger = 120
   }
 
   enum Selection: Hashable {
@@ -63,9 +69,14 @@ struct OnboardingState {
     .fileOrganizer, .houseChores, .dailyBrief, .taxProofread,
   ]
   var isBotModeEnabled = false
+  /// The phone layout has neither the message zoom nor the chat width, so it has no reading
+  /// style page.
+  var offersReadingStyle = true
 
   var steps: [Step] {
-    Step.allCases.filter { $0 != .account || !isAccountSignedIn }
+    Step.allCases.filter {
+      ($0 != .account || !isAccountSignedIn) && ($0 != .readingStyle || offersReadingStyle)
+    }
   }
 
   var canSkipAccount: Bool {
@@ -78,7 +89,7 @@ struct OnboardingState {
     case .model:
       return selection == .local || (selection == .remote(.localCode) && !isAccountSignedIn)
         || (isProviderConnected && isModelSelected)
-    case .account, .finished:
+    case .account, .readingStyle, .finished:
       if selection == .local { return true }
       if selection == .remote(.localCode) {
         return isAccountSignedIn && isProviderConnected && isModelSelected

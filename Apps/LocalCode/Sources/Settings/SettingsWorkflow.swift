@@ -201,11 +201,9 @@ final class SettingsWorkflow: Workflow {
     accountWorkflow = AccountWorkflow(
       workspace: workspace, accountManager: accountManager, client: accountClient)
     projectsController = ProjectController(userInterfaceIdiom: userInterfaceIdiom)
-    // Phones only talk to remote backends; local inference is not offered there. They also show
-    // the account balance above the context used on every page instead of on this one.
+    // Phones show the account balance above the context used on every page instead of on this one.
     settingsSectionsController = SettingsSectionsController(
-      workspace: workspace, isOnDeviceAvailable: userInterfaceIdiom != .phone,
-      showsAccountBalance: userInterfaceIdiom != .phone)
+      workspace: workspace, showsAccountBalance: userInterfaceIdiom != .phone)
     kitSectionsController = KitSectionsController(workspace: workspace)
     activitiesSectionsController = ActivitiesSectionsController(workspace: workspace)
     serveSectionsController =
@@ -544,9 +542,9 @@ final class SettingsWorkflow: Workflow {
       let reasoningEffort: ReasoningEffort
       switch value {
       case .deleted:
-        reasoningEffort = .high
+        reasoningEffort = .deviceDefault
       case .initial(let value):
-        reasoningEffort = value ?? .high
+        reasoningEffort = value ?? .deviceDefault
       case .updated(let value):
         reasoningEffort = value
       }
@@ -725,12 +723,19 @@ final class SettingsWorkflow: Workflow {
     accountWorkflow.presentTopUp(from: presenter, completion: completion)
   }
 
-  func signInFromOnboarding(
-    provider: AccountManager.SignInProvider, presentingViewController: UIViewController,
-    sourceView: UIView
+  /// Signs in from onboarding's own buttons. The system's sign-in sheet is all that shows.
+  func signIn(
+    with provider: AccountManager.SignInProvider, from window: UIWindow?,
+    completion: @escaping (Error?) -> Void
   ) {
-    accountWorkflow.present(
-      from: presentingViewController, sourceView: sourceView, signInProvider: provider)
+    accountWorkflow.signIn(with: provider, from: window, completion: completion)
+  }
+
+  /// Opens the account panel from onboarding, which leaves Settings' account button alone.
+  func presentAccountFromOnboarding(
+    presentingViewController: UIViewController, sourceView: UIView
+  ) {
+    accountWorkflow.present(from: presentingViewController, sourceView: sourceView)
   }
 
   private var defaultWorkspaceFolderURL: URL {
@@ -2010,7 +2015,7 @@ extension SettingsWorkflow: ProjectControllerDelegate {
       safeTokenizer = DeepSeek4_1TextGenerator.safeTokenizer
     case .glm_5_3_flash:
       safeTokenizer = GLM5_3TextGenerator.safeTokenizer
-    case .inkling_2_small:
+    case .inkling_2_small, .inkling_2_mini:
       safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
     case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
       safeTokenizer = Qwen3_5TextGenerator.safeTokenizer
@@ -2138,7 +2143,7 @@ extension SettingsWorkflow: ProjectControllerDelegate {
           unsafeTokenizer = DeepSeek4_1TextGenerator.unsafeTokenizer
         case .glm_5_3_flash:
           unsafeTokenizer = GLM5_3TextGenerator.unsafeTokenizer
-        case .inkling_2_small:
+        case .inkling_2_small, .inkling_2_mini:
           unsafeTokenizer = Inkling2SmallTextGenerator.unsafeTokenizer
         }
         contents = unsafeTokenizer.decode(ProjectHistoryManager.context(history: history).tokens)

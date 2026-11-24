@@ -73,6 +73,9 @@ protocol ChatViewControllableDelegate: AnyObject {
   func chatViewControllerDidRequestKitTab(_ viewController: UIViewController)
   func chatViewControllerDidRequestActivitiesTab(_ viewController: UIViewController)
   func chatViewControllerDidRequestWelcome(_ viewController: UIViewController)
+  func chatViewControllerDidRequestZoomIn(_ viewController: UIViewController)
+  func chatViewControllerDidRequestZoomOut(_ viewController: UIViewController)
+  func chatViewControllerDidRequestActualSize(_ viewController: UIViewController)
   func chatViewController(
     _ viewController: UIViewController,
     didSelectCopyHistoryText text: String)
@@ -94,10 +97,21 @@ protocol ChatViewControllableDelegate: AnyObject {
 }
 
 final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
+  /// A window that would leave the chat narrower than this beside settings has no room for both.
+  /// Settings is then away until the settings button slides it in, pushing the chat aside. It is
+  /// the chat's width in the Mac's narrowest window, 1024 pt beside a 480 pt settings panel.
+  private static let minimumChatWidthBesideSettings: CGFloat = 544
 
   weak var delegate: ChatViewControllableDelegate?
+  /// Whether the window is too narrow for settings beside the chat.
+  private(set) var slidesSettingsIn = false
+  /// Whether settings is slid in, in a window too narrow for it to stay beside the chat.
+  private(set) var isSettingsSlidIn = false
 
   private let settingsViewController: UIViewController
+  private var settingsLeadingConstraint: Constraint?
+  private var settingsWidthConstraint: Constraint?
+  private var middleRightContainerTrailingConstraint: Constraint?
   private let chatInputController: ChatInputController
   private var onboardingViewController: OnboardingViewController?
   private var modelSpeedViewController: ModelSpeedViewController?
@@ -188,6 +202,14 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
   private lazy var middleContainerView: UIView = {
     let view = UIView(frame: .zero)
     view.backgroundColor = .tertiaryBackground
+    return view
+  }()
+  /// Covers the chat while settings is slid in beside it. A tap there puts settings away.
+  private lazy var settingsDismissView: UIView = {
+    let view = UIView(frame: .zero)
+    view.isHidden = true
+    view.addGestureRecognizer(
+      UITapGestureRecognizer(target: self, action: #selector(settingsDismissViewTapped)))
     return view
   }()
   private lazy var chatContentView: PassThroughView = {
@@ -400,6 +422,34 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       }
     }
   }
+  var messageZoom = 100 {
+    didSet {
+      guard messageZoom != oldValue else { return }
+      messageZoomController.zoom = messageZoom
+      guard isViewLoaded else { return }
+      // The messages are at their new size already. A transcript resting at its bottom stays there
+      // as its rows take their new heights.
+      applyProjectHistorySnapshot(
+        scrollTo: projectHistoryItems.last, animated: false, scrollToItem: false)
+    }
+  }
+  var chatWidth = ChatWidth.normal {
+    didSet {
+      guard chatWidth != oldValue, isViewLoaded else { return }
+      chatContentView.snp.updateConstraints { make in
+        make.width.lessThanOrEqualTo(chatWidth.maximumWidth)
+        make.width.equalTo(chatWidth.maximumWidth).priority(.high)
+      }
+      // A transcript resting at its bottom stays there as its rows take their new widths.
+      applyProjectHistorySnapshot(
+        scrollTo: projectHistoryItems.last, animated: false, scrollToItem: false)
+    }
+  }
+  private lazy var messageZoomController: MessageZoomController = {
+    let controller = MessageZoomController()
+    controller.delegate = self
+    return controller
+  }()
 
   override var keyCommands: [UIKeyCommand]? {
     Self.keyboardCommands(isBotModeEnabled: isBotModeEnabled)
@@ -468,21 +518,16 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
     addChild(settingsViewController)
     view.addSubview(settingsViewController.view)
     settingsViewController.didMove(toParent: self)
-
-    let leftPanelWidth: CGFloat
-    #if targetEnvironment(macCatalyst)
-      if #available(iOS 26, macOS 26, macCatalyst 26, *) {
-        leftPanelWidth = 466 + 14
-      } else {
-        leftPanelWidth = 466
-      }
-    #else
-      leftPanelWidth = (UIScreen.main.bounds.width * 0.245).rounded() + 78 + 24
-    #endif
+    // Away, settings waits just off the leading edge rather than hiding, so a window resize or a
+    // turn of the iPad slides it out and back in with the rest of the layout.
+    view.clipsToBounds = true
 
     settingsViewController.view.snp.makeConstraints { make in
-      make.leading.bottom.equalToSuperview()
-      make.width.equalTo(leftPanelWidth)
+      // In a window too narrow for settings beside the chat, settings waits off the leading edge
+      // until it slides in.
+      settingsLeadingConstraint = make.leading.equalToSuperview().constraint
+      make.bottom.equalToSuperview()
+      settingsWidthConstraint = make.width.equalTo(settingsWidth).constraint
       #if targetEnvironment(macCatalyst)
         make.top.equalTo(view.snp.top)
       #else
@@ -515,7 +560,9 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
 
     middleRightContainerView.snp.makeConstraints { make in
       make.leading.equalTo(settingsViewController.view.snp.trailing)
-      make.trailing.bottom.equalToSuperview()
+      make.bottom.equalToSuperview()
+      // Settings slid in pushes the chat aside, and the chat keeps the window's width.
+      middleRightContainerTrailingConstraint = make.trailing.equalToSuperview().constraint
       #if targetEnvironment(macCatalyst)
         make.top.equalTo(view.snp.top)
       #else
@@ -554,9 +601,11 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       make.centerX.equalToSuperview()
       make.leading.greaterThanOrEqualToSuperview().offset(48)
       make.trailing.lessThanOrEqualToSuperview().offset(-48)
-      make.width.lessThanOrEqualTo(960)
+      // The chat column is as wide as the chat width setting allows, or the panel when it is
+      // narrower.
+      make.width.lessThanOrEqualTo(chatWidth.maximumWidth)
       make.width.equalToSuperview().offset(-96).priority(.high.advanced(by: 1))
-      make.width.equalTo(960).priority(.high)
+      make.width.equalTo(chatWidth.maximumWidth).priority(.high)
     }
     chatContentView.addSubview(queuedItemsView)
     chatContentView.addSubview(chatInputController.view)
@@ -627,6 +676,13 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       make.leading.top.equalTo(middleContainerView).inset(20)
       make.trailing.lessThanOrEqualTo(middleContainerView).inset(20)
     }
+    // The message zoom sits in the project bar's row, its trailing edge on the transcript's, while
+    // the transcript rests at its top, and scrolls away with it.
+    projectHistoryCollectionView.addSubview(messageZoomController.view)
+    messageZoomController.view.snp.makeConstraints { make in
+      make.bottom.equalTo(projectHistoryCollectionView.contentLayoutGuide.snp.top).offset(-16)
+      make.trailing.equalTo(projectHistoryContentInsetController.layoutGuide)
+    }
     // A layout guide keeps the banner centered as the input/keyboard moves.
     let bannerSpace = UILayoutGuide()
     middleContainerView.addLayoutGuide(bannerSpace)
@@ -658,6 +714,10 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       make.centerX.equalTo(emptyBannerController.view)
       make.top.equalTo(emptyBannerController.view.snp.bottom).offset(12)
     }
+    middleRightContainerView.addSubview(settingsDismissView)
+    settingsDismissView.snp.makeConstraints { make in
+      make.edges.equalToSuperview()
+    }
     updateChatInputEmptyState()
     updateQueuedItems(from: [])
     applyProjectHistorySnapshot(
@@ -666,6 +726,70 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
     #if targetEnvironment(macCatalyst)
       resolveWindowMovablePeriodically()
     #endif
+  }
+
+  override func viewWillLayoutSubviews() {
+    super.viewWillLayoutSubviews()
+    let slidesSettingsIn = view.bounds.width - settingsWidth < Self.minimumChatWidthBesideSettings
+    if slidesSettingsIn != self.slidesSettingsIn {
+      self.slidesSettingsIn = slidesSettingsIn
+      // A window that turns too narrow puts settings away, and one that widens has it beside the
+      // chat again.
+      isSettingsSlidIn = false
+      projectBarController.showsSettingsButton = slidesSettingsIn
+    }
+    updateSettingsPosition()
+    // The composer is as wide as the chat column: the chat panel, which keeps the window's width
+    // while settings slides in, less its 48pt margins, up to the chat width setting.
+    let chatPanelWidth = slidesSettingsIn ? view.bounds.width : view.bounds.width - settingsWidth
+    chatInputController.fitButtonRow(toWidth: min(chatWidth.maximumWidth, chatPanelWidth - 96))
+  }
+
+  /// Slides settings in beside the chat or puts it away, in a window too narrow for settings to
+  /// stay beside the chat. Elsewhere settings is always beside the chat, and this does nothing.
+  func setSettingsSlidIn(_ isSlidIn: Bool, animated: Bool) {
+    guard slidesSettingsIn, isSlidIn != isSettingsSlidIn else { return }
+    isSettingsSlidIn = isSlidIn
+    if isSlidIn {
+      view.endEditing(true)
+    }
+    updateSettingsPosition()
+    guard animated, view.window != nil else { return }
+    UIView.animate(
+      withDuration: 0.4, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0,
+      options: [.beginFromCurrentState, .curveEaseOut],
+      animations: {
+        self.view.layoutIfNeeded()
+      })
+  }
+
+  /// Settings beside the chat is as wide as in a full-screen window held in landscape, however
+  /// the iPad is held and the window sized.
+  private var settingsWidth: CGFloat {
+    #if targetEnvironment(macCatalyst)
+      if #available(iOS 26, macOS 26, macCatalyst 26, *) {
+        return 466 + 14
+      }
+      return 466
+    #else
+      let screenBounds = UIScreen.main.bounds
+      return (max(screenBounds.width, screenBounds.height) * 0.245).rounded() + 78 + 24
+    #endif
+  }
+
+  private func updateSettingsPosition() {
+    // Slid in, settings leaves a strip of the chat showing to tap, as it does on the phone.
+    let width = max(min(settingsWidth, view.bounds.width - 48), 0)
+    settingsWidthConstraint?.update(offset: width)
+    settingsLeadingConstraint?.update(offset: slidesSettingsIn && !isSettingsSlidIn ? -width : 0)
+    middleRightContainerTrailingConstraint?.update(offset: isSettingsSlidIn ? width : 0)
+    settingsDismissView.isHidden = !isSettingsSlidIn
+    // Off the edge, settings is out of VoiceOver's reach as it would be hidden.
+    settingsViewController.view.accessibilityElementsHidden = slidesSettingsIn && !isSettingsSlidIn
+  }
+
+  @objc private func settingsDismissViewTapped() {
+    setSettingsSlidIn(false, animated: true)
   }
 
   func setOnboardingViewController(
@@ -922,6 +1046,13 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
           keyboardCommand(for: .kitTab, isBotModeEnabled: isBotModeEnabled),
           keyboardCommand(for: .activitiesTab, isBotModeEnabled: isBotModeEnabled),
           keyboardCommand(for: .focusChat, isBotModeEnabled: isBotModeEnabled),
+          UIMenu(
+            title: "", options: .displayInline,
+            children: [
+              keyboardCommand(for: .actualSize, isBotModeEnabled: isBotModeEnabled),
+              keyboardCommand(for: .zoomIn, isBotModeEnabled: isBotModeEnabled),
+              keyboardCommand(for: .zoomOut, isBotModeEnabled: isBotModeEnabled),
+            ]),
         ]))
     builder.remove(menu: .fullscreen)
     builder.remove(menu: .format)
@@ -939,6 +1070,9 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       (.activitiesTab, #selector(menuActivitiesTabAction(_:))),
       (.focusChat, #selector(menuFocusChatAction(_:))),
       (.stopConversation, #selector(menuStopConversationAction(_:))),
+      (.zoomIn, #selector(menuZoomInAction(_:))),
+      (.zoomOut, #selector(menuZoomOutAction(_:))),
+      (.actualSize, #selector(menuActualSizeAction(_:))),
     ]
     return actions.map { keyboardCommand(for: $0, action: $1, isBotModeEnabled: isBotModeEnabled) }
   }
@@ -966,6 +1100,12 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
       selector = #selector(menuFocusChatAction(_:))
     case .stopConversation:
       selector = #selector(menuStopConversationAction(_:))
+    case .zoomIn:
+      selector = #selector(menuZoomInAction(_:))
+    case .zoomOut:
+      selector = #selector(menuZoomOutAction(_:))
+    case .actualSize:
+      selector = #selector(menuActualSizeAction(_:))
     }
     return keyboardCommand(for: action, action: selector, isBotModeEnabled: isBotModeEnabled)
   }
@@ -1020,6 +1160,18 @@ final class ChatViewControllerForiPad: UIViewController, ChatViewControllable {
 
   @objc private func menuStopConversationAction(_ sender: UIKeyCommand) {
     chatInputController.stop()
+  }
+
+  @objc private func menuZoomInAction(_ sender: UIKeyCommand) {
+    delegate?.chatViewControllerDidRequestZoomIn(self)
+  }
+
+  @objc private func menuZoomOutAction(_ sender: UIKeyCommand) {
+    delegate?.chatViewControllerDidRequestZoomOut(self)
+  }
+
+  @objc private func menuActualSizeAction(_ sender: UIKeyCommand) {
+    delegate?.chatViewControllerDidRequestActualSize(self)
   }
 
   /// The session-only message is appended to the snapshot, never to conversation history.
@@ -1325,6 +1477,12 @@ extension ChatViewControllerForiPad: QueuedItemViewDelegate {
     _ view: QueuedItemView, didTapDeleteQueuedItem queuedItem: ProjectQueuedItem
   ) {
     delegate?.chatViewController(self, didDeleteQueuedItem: queuedItem)
+  }
+}
+
+extension ChatViewControllerForiPad: MessageZoomControllerDelegate {
+  func messageZoomControllerDidTapActualSize(_ controller: MessageZoomController) {
+    delegate?.chatViewControllerDidRequestActualSize(self)
   }
 }
 

@@ -727,6 +727,12 @@
 
 "code_font_detail" = "Cambia la fuente del código en los mensajes, incluido el que estás escribiendo.";
 
+"chat_width" = "Ancho del chat";
+
+"chat_width_detail" = "Cambia el ancho que alcanza el chat en una ventana grande. Ancho deja más espacio para el código y las tablas.";
+
+"wide" = "Ancho";
+
 "system" = "Sistema";
 
 "other_dot" = "Otra...";
@@ -2507,6 +2513,9 @@
 "new_chat" = "Nuevo chat";
 "focus_chat" = "Enfocar chat";
 "stop_conversation" = "Detener conversación";
+"zoom_in" = "Ampliar";
+"zoom_out" = "Reducir";
+"actual_size" = "Tamaño real";
 
 "thread_completed_title" = "Trabajo terminado";
 
@@ -2651,6 +2660,13 @@
 "your_account_your_workspace_detail" = "Tus configuraciones y tu espacio de trabajo se mantienen sincronizados en todos tus dispositivos.";
 "you_are_all_set" = "¡Todo listo!";
 "you_are_all_set_detail" = "Aquí tienes un resumen rápido de cómo se organiza Local Code.";
+"choose_a_reading_style" = "Elige un estilo de lectura";
+"choose_a_reading_style_detail" = "Elige cómo se leen las conversaciones. Puedes cambiarlo más adelante en Configuraciones de la máquina.";
+"text_size" = "Tamaño del texto";
+"smaller" = "Más pequeño";
+"bigger" = "Más grande";
+"rename_these_photos_by_date" = "Renombra estas fotos por fecha.";
+"photos_renamed_by_date_detail" = "He renombrado cada foto con la fecha en que se tomó. No se ha eliminado nada.";
 "threads" = "Hilos";
 "onboarding_workspace_detail" = "El espacio de trabajo es el directorio que Local Code puede leer y escribir. «Dentro de Documentos de la app» lo mantiene todo contenido; «Local» da acceso a todo tu Mac. Configúralo por proyecto.";
 "onboarding_workspace_bot_detail" = "El espacio de trabajo es el directorio que Local Code puede leer y escribir. «Dentro de Documentos de la app» lo mantiene todo contenido; «Local» da acceso a todo tu Mac. Configúralo por bot.";
@@ -2841,7 +2857,7 @@
 "serve_limits_detail" = "Las solicitudes se ejecutan de una en una, ya que los modelos aún no admiten lotes. Hasta 128 más esperan en cola, y un chat en curso siempre tiene prioridad. No se guarda nada entre solicitudes, así que cada una envía toda la conversación. Aún no se admiten imágenes.";
 "port_x_is_in_use" = "Otra app está usando el puerto %@";
 
-"local_model_not_on_phone" = "Este modelo no está en este iPhone y los iPhone no descargan modelos locales. Elige otro modelo.";
+"local_model_not_on_phone" = "Este modelo no está en este iPhone y es demasiado grande para descargarlo aquí. Elige otro modelo.";
 
 "turn_finished_detail" = "«%@» ha terminado.";
 "paired_with_local_code_detail" = "Vinculado con Local Code en este dispositivo. Envía /help para ver lo que puede hacer.";

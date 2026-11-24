@@ -756,6 +756,12 @@
 
 "code_font_detail" = "작성 중인 메시지를 포함해 메시지 속 코드의 글꼴을 변경합니다.";
 
+"chat_width" = "채팅 너비";
+
+"chat_width_detail" = "큰 창에서 채팅이 얼마나 넓어지는지 변경합니다. 넓게를 선택하면 코드와 표에 더 넓은 공간이 생깁니다.";
+
+"wide" = "넓게";
+
 "system" = "시스템";
 
 "other_dot" = "기타...";
@@ -2548,6 +2554,9 @@
 "new_chat" = "새 채팅";
 "focus_chat" = "채팅에 포커스";
 "stop_conversation" = "대화 중지";
+"zoom_in" = "확대";
+"zoom_out" = "축소";
+"actual_size" = "실제 크기";
 
 "thread_completed_title" = "작업 완료";
 
@@ -2692,6 +2701,13 @@
 "your_account_your_workspace_detail" = "설정과 작업 공간이 모든 기기에서 동기화됩니다.";
 "you_are_all_set" = "모든 준비가 끝났습니다!";
 "you_are_all_set_detail" = "Local Code가 어떻게 구성되어 있는지 간단히 살펴보세요.";
+"choose_a_reading_style" = "읽기 스타일 선택";
+"choose_a_reading_style_detail" = "대화가 표시되는 방식을 고르세요. 나중에 기기 설정에서 바꿀 수 있습니다.";
+"text_size" = "텍스트 크기";
+"smaller" = "작게";
+"bigger" = "크게";
+"rename_these_photos_by_date" = "이 사진들의 이름을 날짜로 바꿔 줘.";
+"photos_renamed_by_date_detail" = "각 사진의 이름을 촬영한 날짜로 바꿨습니다. 삭제된 것은 없습니다.";
 "threads" = "스레드";
 "onboarding_workspace_detail" = "작업 공간은 Local Code가 읽고 쓸 수 있는 디렉터리입니다. ‘앱 문서 내부’는 모든 것을 앱 안에 보관하고, ‘로컬’은 Mac 전체에 접근할 수 있게 합니다. 프로젝트별로 설정하세요.";
 "onboarding_workspace_bot_detail" = "작업 공간은 Local Code가 읽고 쓸 수 있는 디렉터리입니다. ‘앱 문서 내부’는 모든 것을 앱 안에 보관하고, ‘로컬’은 Mac 전체에 접근할 수 있게 합니다. 봇별로 설정하세요.";
@@ -2882,7 +2898,7 @@
 "serve_limits_detail" = "모델이 아직 일괄 처리를 지원하지 않아 요청은 한 번에 하나씩 실행됩니다. 최대 128개가 더 대기할 수 있으며, 실행 중인 채팅이 항상 먼저 처리됩니다. 요청 사이에는 아무것도 저장되지 않으므로 요청마다 전체 대화를 보냅니다. 이미지는 아직 지원되지 않습니다.";
 "port_x_is_in_use" = "다른 앱이 포트 %@을(를) 사용 중입니다";
 
-"local_model_not_on_phone" = "이 모델은 이 iPhone에 없으며, iPhone에서는 로컬 모델을 다운로드하지 않습니다. 다른 모델을 선택하세요.";
+"local_model_not_on_phone" = "이 모델은 이 iPhone에 없으며, 너무 커서 여기에서 다운로드할 수 없습니다. 다른 모델을 선택하세요.";
 
 "turn_finished_detail" = "‘%@’이(가) 완료되었습니다.";
 "paired_with_local_code_detail" = "이 기기의 Local Code와 페어링되었습니다. /help를 보내면 할 수 있는 일을 볼 수 있습니다.";

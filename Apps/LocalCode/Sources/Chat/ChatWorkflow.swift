@@ -58,6 +58,7 @@ final class ChatWorkflow: Workflow {
   /// Lets Telegram, Discord and iMessage chats work with the threads.
   let messagingBridge: MessagingBridge
   let workspace: SQLiteWorkspace
+  private let dockTileController: DockTileController
   private let accountManager: AccountManager
   // The welcome walkthrough, for as long as the welcome thread is open.
   var onboardingWorkflow: OnboardingWorkflow?
@@ -137,6 +138,8 @@ final class ChatWorkflow: Workflow {
   private var reasoningEffortSubscription: Workspace.Subscription?
   private var botModeSubscription: Workspace.Subscription?
   private var reduceReasoningAnimationSubscription: Workspace.Subscription?
+  private var messageZoomSubscription: Workspace.Subscription?
+  private var chatWidthSubscription: Workspace.Subscription?
   private var workAttitudeSubscription: Workspace.Subscription?
   private var thinkingBudgetSubscription: Workspace.Subscription? = nil
   private var queuedItemSubscription: Workspace.Subscription?
@@ -232,6 +235,7 @@ final class ChatWorkflow: Workflow {
     agentScheduler = AgentScheduler(queue: queue)
     self.userInterfaceIdiom = userInterfaceIdiom
     self.workspace = workspace
+    dockTileController = DockTileController(workspace: workspace)
     self.accountManager = accountManager
     let permittedDirectories = PermittedDirectories(workspace: workspace)
     self.permittedDirectories = permittedDirectories
@@ -297,7 +301,13 @@ final class ChatWorkflow: Workflow {
       case .inkling_2_small:
         textGenerator = Inkling2SmallTextGenerator(
           filePath: LLMZoo.filePathForModelDownloaded(initialLLM),
-          chunkedPrefillMaxLength: chunkedPrefillMaxLength, weightsStreaming: weightsStreaming)
+          chunkedPrefillMaxLength: chunkedPrefillMaxLength, weightsStreaming: weightsStreaming,
+          drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
+      case .inkling_2_mini:
+        textGenerator = Inkling2MiniTextGenerator(
+          filePath: LLMZoo.filePathForModelDownloaded(initialLLM),
+          chunkedPrefillMaxLength: chunkedPrefillMaxLength, weightsStreaming: weightsStreaming,
+          drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
       case .deepseek_4_1_flash:
         guard let engram = specification.engram else {
           preconditionFailure("DeepSeek 4.1 requires an Engram companion")
@@ -334,16 +344,21 @@ final class ChatWorkflow: Workflow {
       modelImage = Self.modelImage(for: nil)
     }
     projectBarController = ProjectBarController(userInterfaceIdiom: userInterfaceIdiom)
-    emptyBannerController = EmptyBannerController(isVertical: userInterfaceIdiom == .phone)
+    emptyBannerController = EmptyBannerController(
+      isVertical: userInterfaceIdiom == .phone, fallsAsleep: userInterfaceIdiom != .phone)
     chatInputController.setModel(
       name: modelName ?? LocalizedString.forKey("unspecified"), image: modelImage)
     textHistoryManager = TextHistoryManager(project: workspace, initialPositiveText: "")
     let viewController: any ChatViewControllable
     if userInterfaceIdiom == .phone {
-      viewController = ChatViewControllerForiPhone(
+      let phoneViewController = ChatViewControllerForiPhone(
         chatInputController: chatInputController,
         projectBarController: projectBarController,
-        emptyBannerController: emptyBannerController)
+        emptyBannerController: emptyBannerController,
+        settingsViewController: settingsWorkflow.viewControllable)
+      phoneViewController.hidesSettingsBeside =
+        workspace.dictionary["settings_beside_chat_hidden", Bool.self] == true
+      viewController = phoneViewController
     } else {
       viewController = ChatViewControllerForiPad(
         chatInputController: chatInputController,
@@ -488,6 +503,36 @@ final class ChatWorkflow: Workflow {
         self.viewController.isReduceReasoningAnimationEnabled = value
       }
     }
+    // The phone layout does not zoom its messages.
+    if let viewController = viewController as? ChatViewControllerForiPad {
+      messageZoomSubscription = workspace.dictionary.subscribe("message_zoom", of: Int.self) {
+        [weak viewController] value in
+        let messageZoom: Int
+        switch value {
+        case .deleted:
+          messageZoom = 100
+        case .initial(let value):
+          messageZoom = value ?? 100
+        case .updated(let value):
+          messageZoom = value
+        }
+        // Message text views read this when they set their fonts, so they are at the new size
+        // when the view controller lays the transcript out again.
+        MarkdownFonts.default.messageZoom = messageZoom
+        viewController?.messageZoom = messageZoom
+      }
+      // Machine Settings offers the chat width on the Mac, where a window has the room for it.
+      chatWidthSubscription = workspace.dictionary.subscribe("chat_width", of: Int.self) {
+        [weak viewController] value in
+        let rawValue: Int?
+        switch value {
+        case .deleted: rawValue = nil
+        case .initial(let value): rawValue = value
+        case .updated(let value): rawValue = value
+        }
+        viewController?.chatWidth = rawValue.flatMap(ChatWidth.init(rawValue:)) ?? .normal
+      }
+    }
     thinkingBudgetSubscription = workspace.dictionary.subscribe(
       "thinking_budget", of: Int.self
     ) { [weak self] value in
@@ -545,6 +590,15 @@ final class ChatWorkflow: Workflow {
   deinit {
     agentScheduler.hibernateAll { _ in }
     stopProjectSecurityScopedResourceAccess()
+  }
+
+  func applicationDidReceiveMemoryWarning() {
+    // Inkling 2 Mini's prefill and decode loops take the warning at their next step. The generation
+    // queue garbage-collects as soon as it is free, and an idle model unloads as it does after the
+    // Model Idle Timeout. Weights in use stay, as a turn would only load them again.
+    Inkling2MiniTextGenerator.MemoryWarning.post()
+    queue.async { [graph] in graph.garbageCollect() }
+    modelIdleTimer?.unloadIfIdle()
   }
 
   func applicationWillTerminate() {
@@ -676,7 +730,7 @@ final class ChatWorkflow: Workflow {
 
   private func reasoningEffortChanged(_ value: ReasoningEffort?) {
     guard case .some(.local(_, let codeAgent)) = codeAgentWrapper, let codeAgent else { return }
-    let reasoningEffort = value ?? .high
+    let reasoningEffort = value ?? .deviceDefault
     switch codeAgent {
     case let codeAgent as Qwen3_5CodeAgent:
       codeAgent.reasoningEffort = .init(reasoningEffort)
@@ -686,7 +740,9 @@ final class ChatWorkflow: Workflow {
       codeAgent.reasoningEffort = .init(reasoningEffort)
     case let codeAgent as GLM5_3CodeAgent:
       codeAgent.reasoningEffort = .init(reasoningEffort)
-    case let codeAgent as Inkling2CodeAgent:
+    case let codeAgent as Inkling2CodeAgent<Inkling2SmallTextGenerator>:
+      codeAgent.reasoningEffort = .init(reasoningEffort)
+    case let codeAgent as Inkling2CodeAgent<Inkling2MiniTextGenerator>:
       codeAgent.reasoningEffort = .init(reasoningEffort)
     default:
       preconditionFailure("Unsupported code agent")
@@ -842,7 +898,7 @@ final class ChatWorkflow: Workflow {
     case .glm_5_3_flash:
       // The Z.ai mark is a flat dark glyph; template rendering keeps it visible in dark mode.
       return #imageLiteral(resourceName: "zai-20").withRenderingMode(.alwaysTemplate)
-    case .inkling_2_small:
+    case .inkling_2_small, .inkling_2_mini:
       // Thinking Machines' mark is a flat dark square; template rendering keeps it visible in dark
       // mode, as for Z.ai's.
       return #imageLiteral(resourceName: "thinkingmachines-20").withRenderingMode(.alwaysTemplate)
@@ -858,26 +914,26 @@ final class ChatWorkflow: Workflow {
     return #imageLiteral(resourceName: "cloud-compute-24").withRenderingMode(.alwaysTemplate)
   }
 
-  /// The local models a model selector lists, marking the ones still to download. An iPhone
-  /// lists only the ones it already has.
+  /// The local models a model selector lists, marking the ones still to download. Of the ones
+  /// the device doesn't download, it lists only those it already has.
   static func localModelSection(
     selectedModel: String?, workspace: SQLiteWorkspace, userInterfaceIdiom: UIUserInterfaceIdiom
   ) -> ItemDisplaySectionModel {
-    let canDownloadLocalModels = DeviceCapability.canDownloadLocalModels(
-      userInterfaceIdiom: userInterfaceIdiom)
     let viewModels: [ItemDisplayCollectionViewCellViewModel] =
       LLMZoo.builtinSpecifications.compactMap { specification in
+        let canDownload = DeviceCapability.canDownloadLocalModel(
+          specification, userInterfaceIdiom: userInterfaceIdiom)
         let isDownloaded = LLMZoo.isModelDownloaded(specification)
-        // An iPhone lists the ones it can run as they are, a missing drafter included, and has
-        // nothing to mark as nothing downloads there.
+        // One the device doesn't download is listed as it is when it can run, a missing drafter
+        // included, and has nothing to mark.
         guard
-          canDownloadLocalModels
+          canDownload
             ? isDownloaded || specification.file == selectedModel
               || !LLMZoo.isModelDeprecated(specification.file)
             : LLMZoo.isModelDownloaded(specification, required: true)
         else { return nil }
         let title = NSMutableAttributedString(string: specification.name)
-        if canDownloadLocalModels, !isDownloaded {
+        if canDownload, !isDownloaded {
           title.append(NSAttributedString(string: " "))
           let configuration = UIImage.SymbolConfiguration(
             pointSize: 13, weight: .regular, scale: .default)
@@ -1077,7 +1133,13 @@ final class ChatWorkflow: Workflow {
     case .inkling_2_small:
       return Inkling2SmallTextGenerator(
         filePath: filePath, chunkedPrefillMaxLength: chunkedPrefillMaxLength,
-        weightsStreaming: weightsStreaming)
+        weightsStreaming: weightsStreaming,
+        drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
+    case .inkling_2_mini:
+      return Inkling2MiniTextGenerator(
+        filePath: filePath, chunkedPrefillMaxLength: chunkedPrefillMaxLength,
+        weightsStreaming: weightsStreaming,
+        drafterFile: specification.draftFile.map(LLMZoo.filePathForModelDownloaded))
     case .deepseek_4_1_flash:
       guard let engram = specification.engram else { return nil }
       return DeepSeek4_1TextGenerator(
@@ -1175,18 +1237,18 @@ final class ChatWorkflow: Workflow {
   }
 
   private func selectLocalModel(file: String) {
-    guard chatInputController.sendState == .idle else { return }
-    let canDownloadLocalModels = DeviceCapability.canDownloadLocalModels(
-      userInterfaceIdiom: userInterfaceIdiom)
-    guard let specification = LLMZoo.specificationForModel(file),
-      canDownloadLocalModels || LLMZoo.isModelDownloaded(specification, required: true)
+    guard chatInputController.sendState == .idle,
+      let specification = LLMZoo.specificationForModel(file)
     else { return }
+    let canDownload = DeviceCapability.canDownloadLocalModel(
+      specification, userInterfaceIdiom: userInterfaceIdiom)
+    guard canDownload || LLMZoo.isModelDownloaded(specification, required: true) else { return }
     selectedLLM = file
     workspace.dictionary["chat_backend", String.self] = nil
     chatInputController.setModel(
       name: LLMZoo.humanReadableNameForModel(file), image: Self.modelImage(for: file))
-    // Selecting downloads the rest of the model, the drafter too, except on an iPhone.
-    if canDownloadLocalModels, !LLMZoo.isModelDownloaded(specification) {
+    // Selecting downloads the rest of the model, the drafter too, where the device downloads it.
+    if canDownload, !LLMZoo.isModelDownloaded(specification) {
       downloadLLMModel(specification) { [weak self] success in
         guard let self, success, self.selectedLLM == file else { return }
         self.warmupSelectedModel()
@@ -1285,6 +1347,8 @@ final class ChatWorkflow: Workflow {
         DispatchQueue.main.async { self?.serveController?.remove(idleAgents: serveIdleAgents) }
         for generator in generators { generator.unload() }
         graph.garbageCollect()
+        // Compiled kernels and their scratch buffers are built again for the next load.
+        if request.isMemoryWarning { DynamicGraph.vacuum() }
       }
     }
   }
@@ -1729,7 +1793,7 @@ final class ChatWorkflow: Workflow {
           chatInputController.setModel(
             name: LLMZoo.humanReadableNameForModel(threadModel),
             image: Self.modelImage(for: threadModel))
-        } else if !DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) {
+        } else if userInterfaceIdiom == .phone {
           selectCloudFallbackProvider()
         } else {
           codeAgentWrapper = nil
@@ -1740,7 +1804,7 @@ final class ChatWorkflow: Workflow {
           chatInputController.setModel(
             name: LocalizedString.forKey("unspecified"), image: Self.modelImage(for: nil))
         }
-      } else if !DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) {
+      } else if userInterfaceIdiom == .phone {
         selectCloudFallbackProvider()
       } else {
         codeAgentWrapper = nil
@@ -1769,7 +1833,7 @@ final class ChatWorkflow: Workflow {
         chatInputController.setModel(
           name: LLMZoo.humanReadableNameForModel(selectedLLM),
           image: Self.modelImage(for: selectedLLM))
-      } else if !DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) {
+      } else if userInterfaceIdiom == .phone {
         selectCloudFallbackProvider()
       } else {
         codeAgentWrapper = nil
@@ -1934,7 +1998,8 @@ final class ChatWorkflow: Workflow {
         GLM5_3ContextCache(
           projectPath: projectURL.path, checkpointStride: textGenerator.checkpointStride
         ).loadSuspension(threadId: threadId) != nil
-    case let textGenerator as Inkling2SmallTextGenerator:
+    case let textGenerator as any Inkling2TextGenerator:
+      // Either Inkling 2 keeps its suspensions in Inkling 2 Small's context cache.
       hasPersistedSuspension =
         Inkling2SmallContextCache(
           projectPath: projectURL.path, checkpointStride: textGenerator.checkpointStride
@@ -1969,7 +2034,10 @@ final class ChatWorkflow: Workflow {
               $0.request, projectPath: projectURL.path, workspacePath: workspacePath
             )?.subtitle(for: .past)
           }.joined(separator: "\n")
-          if suspendedResult.output.isEmpty {
+          // Inkling 2's output is its visible text alone, so a call can come without any.
+          if suspendedResult.output.isEmpty, suspendedResult.toolCalls.isEmpty,
+            !suspendedResult.hasIncompleteToolCall
+          {
             var chainOfThought = suspendedResult.think.trimmingCharacters(
               in: .whitespacesAndNewlines)
             let chainOfThoughtLines = chainOfThought.components(separatedBy: .newlines)
@@ -1985,15 +2053,19 @@ final class ChatWorkflow: Workflow {
               suspendedResult.output, toolCallStart: restoredCodeAgent.toolCallStart,
               toolCallEnd: restoredCodeAgent.toolCallEnd
             ).trimmingCharacters(in: .whitespacesAndNewlines)
-            var renderingToolCalls = suspendedResult.toolCalls
-            if let incompleteToolCall = suspendedResult.incompleteToolCall {
-              renderingToolCalls.append(incompleteToolCall)
-            }
-            let toolCallContext = renderingToolCalls.compactMap {
+            var toolCallSubtitles = suspendedResult.toolCalls.compactMap {
               ToolsRegistry.parse(
                 $0.request, projectPath: projectURL.path, workspacePath: workspacePath
               )?.subtitle(for: .now)
-            }.joined(separator: "\n")
+            }
+            if let incompleteToolCall = suspendedResult.incompleteToolCall,
+              let subtitle = ToolsRegistry.subtitle(
+                forIncomplete: incompleteToolCall.request, projectPath: projectURL.path,
+                workspacePath: workspacePath)
+            {
+              toolCallSubtitles.append(subtitle)
+            }
+            let toolCallContext = toolCallSubtitles.joined(separator: "\n")
             incompleteResponseText =
               [toolCallHistoryContext, response, toolCallContext].filter { !$0.isEmpty }.joined(
                 separator: "\n---\n")
@@ -2047,7 +2119,7 @@ final class ChatWorkflow: Workflow {
         safeTokenizer = DeepSeek4_1TextGenerator.safeTokenizer
       case .glm_5_3_flash:
         safeTokenizer = GLM5_3TextGenerator.safeTokenizer
-      case .inkling_2_small:
+      case .inkling_2_small, .inkling_2_mini:
         safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
       case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
         safeTokenizer = Qwen3_5TextGenerator.safeTokenizer
@@ -2126,7 +2198,7 @@ final class ChatWorkflow: Workflow {
         toolCallSpecialTokens = DeepSeek4ToolCallParser.toolCallSpecialTokens
       } else if textGenerator is GLM5_3TextGenerator {
         toolCallSpecialTokens = GLM5_3ToolCallParser.toolCallSpecialTokens
-      } else if textGenerator is Inkling2SmallTextGenerator {
+      } else if textGenerator is any Inkling2TextGenerator {
         // Inkling 2 keeps only the visible text in a node's tokens.
         toolCallSpecialTokens = [:]
       } else {
@@ -2146,7 +2218,7 @@ final class ChatWorkflow: Workflow {
       case .glm_5_3_flash:
         safeTokenizer = GLM5_3TextGenerator.safeTokenizer
         toolCallSpecialTokens = GLM5_3ToolCallParser.toolCallSpecialTokens
-      case .inkling_2_small:
+      case .inkling_2_small, .inkling_2_mini:
         safeTokenizer = Inkling2SmallTextGenerator.safeTokenizer
         toolCallSpecialTokens = [:]
       case .qwen_3_5_4b, .qwen_3_5_9b, .qwen_3_5_27b, nil:
@@ -2229,18 +2301,24 @@ final class ChatWorkflow: Workflow {
 extension ChatWorkflow: OnboardingWorkflowDelegate {
   func onboardingWorkflow(
     _ workflow: OnboardingWorkflow, didRequestSignIn provider: AccountManager.SignInProvider,
-    sourceView: UIView
+    completion: @escaping (Error?) -> Void
   ) {
-    settingsWorkflow.signInFromOnboarding(
-      provider: provider, presentingViewController: workflow.viewController,
-      sourceView: sourceView)
+    settingsWorkflow.signIn(
+      with: provider, from: workflow.viewController.view.window, completion: completion)
+  }
+
+  func onboardingWorkflow(
+    _ workflow: OnboardingWorkflow, didRequestManageAccountFrom sourceView: UIView
+  ) {
+    settingsWorkflow.presentAccountFromOnboarding(
+      presentingViewController: workflow.viewController, sourceView: sourceView)
   }
 
   func onboardingWorkflow(
     _ workflow: OnboardingWorkflow, didRequestDownloadOfLocalModel file: String
   ) {
-    guard DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom),
-      let specification = LLMZoo.specificationForModel(file),
+    guard let specification = LLMZoo.specificationForModel(file),
+      DeviceCapability.canDownloadLocalModel(specification, userInterfaceIdiom: userInterfaceIdiom),
       !LLMZoo.isModelDownloaded(specification)
     else { return }
     // Selecting the model later joins this download instead of starting another.
@@ -2475,6 +2553,7 @@ extension ChatWorkflow: SettingsWorkflowDelegate {
     modelSpeedWorkflow.start()
     self.modelSpeedWorkflow = modelSpeedWorkflow
     viewController.setModelSpeedViewController(modelSpeedWorkflow.viewController, animated: true)
+    dismissSettings()
   }
 
   func settingsWorkflow(
@@ -2637,17 +2716,36 @@ extension ChatWorkflow {
         self?.settingsWorkflow.presentMachineSettings()
       }
     case .projectsTab:
+      // In an iPad window too narrow for settings beside the chat, a tab's shortcut slides
+      // settings in on it.
       settingsWorkflow.selectProjectsTab()
+      (viewController as? ChatViewControllerForiPad)?.setSettingsSlidIn(true, animated: true)
     case .settingsTab:
       settingsWorkflow.selectSettingsTab()
+      (viewController as? ChatViewControllerForiPad)?.setSettingsSlidIn(true, animated: true)
     case .kitTab:
       settingsWorkflow.selectKitTab()
+      (viewController as? ChatViewControllerForiPad)?.setSettingsSlidIn(true, animated: true)
     case .activitiesTab:
       settingsWorkflow.selectActivitiesTab()
+      (viewController as? ChatViewControllerForiPad)?.setSettingsSlidIn(true, animated: true)
     case .focusChat:
       chatInputController.focus()
     case .stopConversation:
       chatInputController.stop()
+    case .zoomIn:
+      // Message text zooms a tenth of its regular size at a time, between 20% and 500%. The phone
+      // layout does not zoom.
+      guard userInterfaceIdiom != .phone else { return }
+      workspace.dictionary["message_zoom", Int.self] = min(
+        (workspace.dictionary["message_zoom", Int.self] ?? 100) + 10, 500)
+    case .zoomOut:
+      guard userInterfaceIdiom != .phone else { return }
+      workspace.dictionary["message_zoom", Int.self] = max(
+        (workspace.dictionary["message_zoom", Int.self] ?? 100) - 10, 20)
+    case .actualSize:
+      guard userInterfaceIdiom != .phone else { return }
+      workspace.dictionary["message_zoom", Int.self] = nil
     }
   }
 
@@ -2661,24 +2759,40 @@ extension ChatWorkflow {
       settingsWorkflow.viewControllable, animated: true, completion: completion)
   }
 
-  /// Settings presents its own prompts, so on the phone it comes up first.
+  /// Settings presents its own prompts, so on the phone, and in an iPad window too narrow for
+  /// settings beside the chat, it comes up first.
   private func withSettingsPresented(_ body: @escaping () -> Void) {
+    if let viewController = viewController as? ChatViewControllerForiPad {
+      viewController.setSettingsSlidIn(true, animated: true)
+      body()
+      return
+    }
     guard userInterfaceIdiom == .phone,
       settingsWorkflow.viewControllable.presentingViewController == nil
     else {
       body()
       return
     }
+    if let viewController = viewController as? ChatViewControllerForiPhone,
+      viewController.canShowSettingsBeside
+    {
+      viewController.setSettingsBeside(true, animated: true)
+      body()
+      return
+    }
     presentSettings(interactive: false, completion: body)
   }
 
-  /// On the phone, puts settings away once what it opened shows, unless it is still asking
-  /// something first.
+  /// On the phone, and in an iPad window too narrow for settings beside the chat, puts settings
+  /// away once what it opened shows, unless it is still asking something first.
   private func dismissSettings() {
     let settingsViewController = settingsWorkflow.viewControllable
-    guard settingsViewController.presentingViewController != nil,
-      settingsViewController.presentedViewController == nil
-    else { return }
+    guard settingsViewController.presentedViewController == nil else { return }
+    if let viewController = viewController as? ChatViewControllerForiPad {
+      viewController.setSettingsSlidIn(false, animated: true)
+      return
+    }
+    guard settingsViewController.presentingViewController != nil else { return }
     settingsViewController.dismiss(animated: true)
   }
 }
@@ -2688,18 +2802,32 @@ extension ChatWorkflow: ChatViewControllableDelegate {
     _ viewController: UIViewController,
     didReceiveScreenEdgePan screenEdgePanGestureRecognizer: UIScreenEdgePanGestureRecognizer
   ) {
-    // This is to trigger settings workflow presentation.
+    if let viewController = viewController as? ChatViewControllerForiPhone,
+      viewController.canShowSettingsBeside
+    {
+      // Beside the chat, settings has nothing to slide over. The swipe brings it back.
+      if screenEdgePanGestureRecognizer.state == .began, !viewController.isSettingsBeside {
+        viewController.setSettingsBeside(true, animated: true)
+        viewController.hidesSettingsBeside = false
+        workspace.dictionary["settings_beside_chat_hidden", Bool.self] = nil
+      }
+      return
+    }
+    // This is to trigger settings workflow presentation. The swipe moves settings by its own
+    // width, which leaves some of the chat showing.
+    let presentedWidth = SettingsPresentationController.presentedFrame(
+      in: viewController.view.window ?? viewController.view
+    ).width
     switch screenEdgePanGestureRecognizer.state {
     case .began:
       presentSettings(interactive: true)
     case .changed:
       let translationX = screenEdgePanGestureRecognizer.translation(in: viewController.view).x
-      // 48 removes the hinge that still visible after settings presented.
-      let percent = translationX / (viewController.view.bounds.width - 48)
+      let percent = translationX / presentedWidth
       settingsWorkflow.percentDrivenInteractiveTransition?.update(percent)
     case .ended:
       let translationX = screenEdgePanGestureRecognizer.translation(in: viewController.view).x
-      let percent = translationX / (viewController.view.bounds.width - 48)
+      let percent = translationX / presentedWidth
       if percent > 0.5
         || (translationX > 48
           && screenEdgePanGestureRecognizer.velocity(in: viewController.view).x >= 800)
@@ -2756,6 +2884,18 @@ extension ChatWorkflow: ChatViewControllableDelegate {
 
   func chatViewControllerDidRequestActivitiesTab(_ viewController: UIViewController) {
     handleKeyboardShortcut(.activitiesTab)
+  }
+
+  func chatViewControllerDidRequestZoomIn(_ viewController: UIViewController) {
+    handleKeyboardShortcut(.zoomIn)
+  }
+
+  func chatViewControllerDidRequestZoomOut(_ viewController: UIViewController) {
+    handleKeyboardShortcut(.zoomOut)
+  }
+
+  func chatViewControllerDidRequestActualSize(_ viewController: UIViewController) {
+    handleKeyboardShortcut(.actualSize)
   }
 
   func chatViewControllerDidRequestWelcome(_ viewController: UIViewController) {
@@ -2825,7 +2965,23 @@ extension ChatWorkflow: ChatViewControllableDelegate {
 extension ChatWorkflow: ProjectBarControllerDelegate {
   func projectBarControllerDidTapSettings(_ controller: ProjectBarController) {
     // Settings comes back on whichever tab was last visited.
-    guard userInterfaceIdiom == .phone else { return }
+    if let viewController = viewController as? ChatViewControllerForiPad {
+      // An iPad window too narrow for settings beside the chat shows this button, which slides
+      // settings in.
+      viewController.setSettingsSlidIn(true, animated: true)
+      return
+    }
+    if let viewController = viewController as? ChatViewControllerForiPhone,
+      viewController.canShowSettingsBeside
+    {
+      // An unfolded iPhone Duo held wide has settings beside the chat, where this button shows
+      // it and puts it away. Put away, it stays away until it is shown again.
+      let isBeside = !viewController.isSettingsBeside
+      viewController.setSettingsBeside(isBeside, animated: true)
+      viewController.hidesSettingsBeside = !isBeside
+      workspace.dictionary["settings_beside_chat_hidden", Bool.self] = isBeside ? nil : true
+      return
+    }
     presentSettings(interactive: false)
   }
 
@@ -2970,6 +3126,9 @@ extension ChatWorkflow: ChatInputControllerDelegate {
   }
 
   func chatInputControllerDidBeginEditing(_ controller: ChatInputController) {
+    // In an iPad window too narrow for settings beside the chat, settings slid in covers the input.
+    // Focusing the chat from the keyboard (Focus Chat, ⌘L) puts settings away to type there.
+    (viewController as? ChatViewControllerForiPad)?.setSettingsSlidIn(false, animated: true)
   }
 
   func chatInputControllerDidEndEditing(_ controller: ChatInputController) {
@@ -3040,7 +3199,10 @@ extension ChatWorkflow: ChatInputControllerDelegate {
     if let specification = LLMZoo.specificationForModel(file),
       !LLMZoo.isModelDownloaded(specification, required: true)
     {
-      guard DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) else {
+      guard
+        DeviceCapability.canDownloadLocalModel(
+          specification, userInterfaceIdiom: userInterfaceIdiom)
+      else {
         presentModelNotOnPhone(specification)
         return
       }
@@ -3101,12 +3263,12 @@ extension ChatWorkflow: ChatInputControllerDelegate {
     // Stopping without a steer hands the queue back to the input instead of sending it.
     let isRestoringQueue = isStopping && steeredItems.isEmpty
     // Like a new turn, sending downloads a model whose files were removed. The queue stays
-    // until then, so it goes out once the download finishes. An iPhone doesn't download: the
-    // send says so, and the queue goes back to the input.
+    // until then, so it goes out once the download finishes. One the device doesn't download
+    // isn't waited for: the send says so, and the queue goes back to the input.
     if !isRestoringUserNode, !isRestoringQueue,
-      DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom),
       case .some(.local) = codeAgentWrapper,
       let file = selectedLLM, let specification = LLMZoo.specificationForModel(file),
+      DeviceCapability.canDownloadLocalModel(specification, userInterfaceIdiom: userInterfaceIdiom),
       !LLMZoo.isModelDownloaded(specification, required: true)
     {
       let threadId = projectHistoryManager.threadId
@@ -3284,7 +3446,10 @@ extension ChatWorkflow: ChatInputControllerDelegate {
     else { return false }
     // A missing drafter does not hold the turn; selecting the model downloads it.
     guard LLMZoo.isModelDownloaded(specification, required: true) else {
-      guard DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) else {
+      guard
+        DeviceCapability.canDownloadLocalModel(
+          specification, userInterfaceIdiom: userInterfaceIdiom)
+      else {
         presentModelNotOnPhone(specification)
         return false
       }
@@ -3956,7 +4121,8 @@ extension ChatWorkflow: ChatInputControllerDelegate {
     let incompleteToolCall = partialResult.incompleteToolCall
     let hasIncompleteToolCall = partialResult.hasIncompleteToolCall
     let tokens = partialResult.thinkTokens.count + partialResult.outputTokens.count
-    if outputText.isEmpty {
+    // Inkling 2's output is its visible text alone, so a call can come without any.
+    if outputText.isEmpty, toolCalls.isEmpty, !hasIncompleteToolCall {
       let toolCallContext = toolCallHistory.compactMap {
         ToolsRegistry.parse(
           $0.request, projectPath: projectPath, workspacePath: workspacePath
@@ -3978,15 +4144,19 @@ extension ChatWorkflow: ChatInputControllerDelegate {
         )?.subtitle(for: .past)
       }.joined(separator: "\n")
       if !toolCalls.isEmpty || hasIncompleteToolCall {
-        var renderingToolCalls = toolCalls
-        if let incompleteToolCall {
-          renderingToolCalls.append(incompleteToolCall)
-        }
-        let toolCallContext = renderingToolCalls.compactMap {
+        var toolCallSubtitles = toolCalls.compactMap {
           ToolsRegistry.parse(
             $0.request, projectPath: projectPath, workspacePath: workspacePath
           )?.subtitle(for: .now)
-        }.joined(separator: "\n")
+        }
+        if let incompleteToolCall,
+          let subtitle = ToolsRegistry.subtitle(
+            forIncomplete: incompleteToolCall.request, projectPath: projectPath,
+            workspacePath: workspacePath)
+        {
+          toolCallSubtitles.append(subtitle)
+        }
+        let toolCallContext = toolCallSubtitles.joined(separator: "\n")
         viewController.setLastMessage(
           toolCallHistoryContext, thinking: "",
           output: [response, toolCallContext].filter { !$0.isEmpty }.joined(separator: "\n---\n"),

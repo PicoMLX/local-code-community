@@ -1,0 +1,33 @@
+name: Pico native library
+
+on:
+  pull_request:
+    branches: [engine-router]
+  push:
+    branches: [engine-router]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-library:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test source metadata and C export
+        run: /usr/bin/python3 -B -m unittest discover -s Scripts/tests -p test_pico_build_info.py -v
+      - name: Configure Bazel
+        run: |
+          if ! command -v bazelisk >/dev/null; then brew install bazelisk; fi
+          ln -s WORKSPACE.darwin WORKSPACE
+          printf '%s\n' 'try-import %workspace%/.bazelrc.darwin' > .bazelrc
+      - name: Build native library
+        run: bazelisk build -c opt //Apps/LocalCode:PicoLocalCodeNative
+      - name: Verify native entry points
+        run: |
+          nm -gU bazel-bin/Apps/LocalCode/PicoLocalCodeNative.dylib | grep '_pico_local_code_build_info_v1$'
+          nm -gU bazel-bin/Apps/LocalCode/PicoLocalCodeNative.dylib | grep '_pico_local_code_open_v3$'

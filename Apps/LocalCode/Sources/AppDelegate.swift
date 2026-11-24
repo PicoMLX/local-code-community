@@ -152,12 +152,26 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
     DynamicGraph.abort()
   }
 
+  func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+    workflow?.applicationDidReceiveMemoryWarning()
+  }
+
   func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
     workflow?.handle(url: url) ?? false
+  }
+
+  func application(
+    _ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?
+  ) -> UIInterfaceOrientationMask {
+    // Info.plist lists landscape for iPhone so that an open iPhone Duo fills its inner display,
+    // which is wider than tall when the phone is upright. That display ignores this answer
+    // because the app does not require full screen. Every other iPhone screen stays in portrait.
+    // The iPad does not require full screen either: its window takes any size, held either way.
+    UIDevice.current.userInterfaceIdiom == .phone ? .portrait : .all
   }
 
   override func buildMenu(with builder: UIMenuBuilder) {

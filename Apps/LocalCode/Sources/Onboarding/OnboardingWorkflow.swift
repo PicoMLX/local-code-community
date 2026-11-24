@@ -10,9 +10,13 @@ import UIKit
 import UserAccount
 
 protocol OnboardingWorkflowDelegate: AnyObject {
+  /// Signs in with the system's sign-in sheet over onboarding. Completes when the sign-in is over,
+  /// with the error that stopped it, if any.
   func onboardingWorkflow(
     _ workflow: OnboardingWorkflow, didRequestSignIn provider: AccountManager.SignInProvider,
-    sourceView: UIView)
+    completion: @escaping (Error?) -> Void)
+  func onboardingWorkflow(
+    _ workflow: OnboardingWorkflow, didRequestManageAccountFrom sourceView: UIView)
   /// Asks for the local model chosen on the model step to start downloading right away. It is
   /// only selected once onboarding finishes.
   func onboardingWorkflow(
@@ -31,7 +35,7 @@ protocol OnboardingWorkflowDelegate: AnyObject {
 final class OnboardingWorkflow: Workflow {
   weak var delegate: OnboardingWorkflowDelegate?
 
-  let viewController = OnboardingViewController()
+  let viewController: OnboardingViewController
   var viewControllable: UIViewController { viewController }
 
   private let workspace: SQLiteWorkspace
@@ -54,16 +58,22 @@ final class OnboardingWorkflow: Workflow {
   // The choice stays pending here until Continue hands it to the chat workflow, which owns
   // the selected model.
   private var pendingLocalModel: String?
+  private var signingInProvider: AccountManager.SignInProvider?
+  private var signInErrorMessage: String?
   private var selectedLocalModel: LLMZoo.Specification? {
     let selectedFile = pendingLocalModel ?? workspace.dictionary["llm_model", String.self]
     return localModelSpecifications.first { $0.file == selectedFile }
       ?? localModelSpecifications.first
   }
 
-  // The local choices depend only on this device, so they are built once.
+  // The local choices depend only on this device, so they are built once. Of the models offered
+  // here, an iPhone downloads only Inkling 2 Mini.
   private lazy var localModelSpecifications: [LLMZoo.Specification] =
     OnboardingState.offeredLocalModels(physicalMemory: ProcessInfo.processInfo.physicalMemory)
     .compactMap { LLMZoo.specificationForModel($0) }
+    .filter {
+      DeviceCapability.canDownloadLocalModel($0, userInterfaceIdiom: userInterfaceIdiom)
+    }
   private var localModelOptions: [OnboardingViewController.LocalModelOption] {
     localModelSpecifications.map { specification in
       // The quantization suffix is an implementation detail the choice does not need.
@@ -82,9 +92,12 @@ final class OnboardingWorkflow: Workflow {
     self.workspace = workspace
     self.accountManager = accountManager
     self.userInterfaceIdiom = userInterfaceIdiom
+    viewController = OnboardingViewController(
+      workspace: workspace, userInterfaceIdiom: userInterfaceIdiom)
     viewController.delegate = self
-    // iPhones don't download local models, so they start on Local Code's cloud.
-    if !DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom) {
+    state.offersReadingStyle = userInterfaceIdiom != .phone
+    // With no local model to offer, it starts on Local Code's cloud.
+    if localModelSpecifications.isEmpty {
       state.selection = .remote(.localCode)
     }
     viewController.localModels = localModelOptions
@@ -130,6 +143,15 @@ final class OnboardingWorkflow: Workflow {
     viewController.connectionMessage = LocalizedString.forKey(
       state.isProviderConnected
         ? "connected_choose_a_model_detail" : "connect_your_provider_to_continue")
+    viewController.textSize = OnboardingState.TextSize(
+      rawValue: workspace.dictionary["message_zoom", Int.self] ?? 100)
+    viewController.textFontFamily = workspace.dictionary["text_font", String.self].flatMap {
+      MarkdownFonts.isAvailable($0) ? $0 : nil
+    }
+    viewController.chatWidth =
+      workspace.dictionary["chat_width", Int.self].flatMap(ChatWidth.init(rawValue:)) ?? .normal
+    viewController.signingInProvider = signingInProvider
+    viewController.signInErrorMessage = signInErrorMessage
   }
 
   /// Derives the state from the account and saved credentials, which can change outside this
@@ -144,23 +166,24 @@ final class OnboardingWorkflow: Workflow {
         $0.endpoint.baseURL == account?.endpoint.baseURL
       } ?? false
     if state.step == .account, state.isAccountSignedIn {
-      state.step = state.canContinue ? .finished : .model
+      state.step =
+        state.canContinue ? (state.offersReadingStyle ? .readingStyle : .finished) : .model
     }
-    if state.step == .finished, !state.canContinue {
+    if state.step == .readingStyle || state.step == .finished, !state.canContinue {
       state.step =
         state.selection == .remote(.localCode) && !state.isAccountSignedIn ? .account : .model
     }
   }
 
   private var modelOptions: [OnboardingViewController.ModelOption] {
-    let defaultModelName = localModelOptions.first?.name ?? "Qwen 3.8 27B"
-    let localOption = OnboardingViewController.ModelOption(
-      selection: .local, title: LocalizedString.forKey("local_model"),
-      detail: LocalizedString.format(key: "onboarding_local_model_detail", defaultModelName),
-      badge: LocalizedString.forKey("recommended"), isBadgeHighlighted: true)
+    let localOptions = localModelOptions.prefix(1).map { defaultModel in
+      OnboardingViewController.ModelOption(
+        selection: .local, title: LocalizedString.forKey("local_model"),
+        detail: LocalizedString.format(key: "onboarding_local_model_detail", defaultModel.name),
+        badge: LocalizedString.forKey("recommended"), isBadgeHighlighted: true)
+    }
     return
-      (DeviceCapability.canDownloadLocalModels(userInterfaceIdiom: userInterfaceIdiom)
-      ? [localOption] : [])
+      localOptions
       + RemoteProvider.allCases.map { provider in
         let account = provider.account(in: workspace)
         let badge: String
@@ -312,10 +335,24 @@ extension OnboardingWorkflow: OnboardingViewControllerDelegate {
 
   func onboarding(
     _ viewController: OnboardingViewController,
-    didRequestSignIn provider: AccountManager.SignInProvider,
-    sourceView: UIView
+    didRequestSignIn provider: AccountManager.SignInProvider
   ) {
-    delegate?.onboardingWorkflow(self, didRequestSignIn: provider, sourceView: sourceView)
+    guard signingInProvider == nil else { return }
+    signingInProvider = provider
+    signInErrorMessage = nil
+    refresh()
+    delegate?.onboardingWorkflow(self, didRequestSignIn: provider) { [weak self] error in
+      guard let self else { return }
+      self.signingInProvider = nil
+      self.signInErrorMessage = error?.localizedDescription
+      self.refresh()
+    }
+  }
+
+  func onboarding(
+    _ viewController: OnboardingViewController, didRequestManageAccountFrom sourceView: UIView
+  ) {
+    delegate?.onboardingWorkflow(self, didRequestManageAccountFrom: sourceView)
   }
 
   func onboarding(
@@ -327,6 +364,30 @@ extension OnboardingWorkflow: OnboardingViewControllerDelegate {
     } else {
       state.projectIdeas.remove(idea)
     }
+    refresh()
+  }
+
+  // The reading style is app settings too: a choice takes effect right away, as it does from
+  // Machine Settings, and the page's miniature chat shows it.
+  func onboarding(
+    _ viewController: OnboardingViewController,
+    didSelectTextSize textSize: OnboardingState.TextSize
+  ) {
+    workspace.dictionary["message_zoom", Int.self] = textSize == .normal ? nil : textSize.rawValue
+    refresh()
+  }
+
+  func onboarding(
+    _ viewController: OnboardingViewController, didSelectTextFontFamily family: String?
+  ) {
+    workspace.dictionary["text_font", String.self] = family
+    refresh()
+  }
+
+  func onboarding(
+    _ viewController: OnboardingViewController, didSelectChatWidth chatWidth: ChatWidth
+  ) {
+    workspace.dictionary["chat_width", Int.self] = chatWidth.rawValue
     refresh()
   }
 

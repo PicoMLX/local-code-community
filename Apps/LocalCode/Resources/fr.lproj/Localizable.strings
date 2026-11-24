@@ -756,6 +756,12 @@
 
 "code_font_detail" = "Modifiez la police du code dans les messages, y compris celui que vous écrivez.";
 
+"chat_width" = "Largeur de la discussion";
+
+"chat_width_detail" = "Modifiez la largeur que prend la discussion dans une grande fenêtre. Large laisse plus de place au code et aux tableaux.";
+
+"wide" = "Large";
+
 "system" = "Système";
 
 "other_dot" = "Autre...";
@@ -2547,6 +2553,9 @@
 "new_chat" = "Nouvelle discussion";
 "focus_chat" = "Activer la discussion";
 "stop_conversation" = "Arrêter la conversation";
+"zoom_in" = "Zoom avant";
+"zoom_out" = "Zoom arrière";
+"actual_size" = "Taille réelle";
 
 "thread_completed_title" = "Travail terminé";
 
@@ -2691,6 +2700,13 @@
 "your_account_your_workspace_detail" = "Vos paramètres et votre espace de travail restent synchronisés sur tous vos appareils.";
 "you_are_all_set" = "Tout est prêt !";
 "you_are_all_set_detail" = "Voici un aperçu rapide de l’organisation de Local Code.";
+"choose_a_reading_style" = "Choisir un style de lecture";
+"choose_a_reading_style_detail" = "Choisissez la présentation des conversations. Vous pourrez la modifier plus tard dans Paramètres de l'appareil.";
+"text_size" = "Taille du texte";
+"smaller" = "Plus petit";
+"bigger" = "Plus grand";
+"rename_these_photos_by_date" = "Renomme ces photos par date.";
+"photos_renamed_by_date_detail" = "J’ai renommé chaque photo d’après sa date de prise de vue. Rien n’a été supprimé.";
 "threads" = "Fils";
 "onboarding_workspace_detail" = "L’espace de travail est le répertoire dans lequel Local Code peut lire et écrire. « Dans les documents de l’app » garde tout au même endroit ; « Local » donne accès à l’ensemble de votre Mac. Définissez-le pour chaque projet.";
 "onboarding_workspace_bot_detail" = "L’espace de travail est le répertoire dans lequel Local Code peut lire et écrire. « Dans les documents de l’app » garde tout au même endroit ; « Local » donne accès à l’ensemble de votre Mac. Définissez-le pour chaque bot.";
@@ -2881,7 +2897,7 @@
 "serve_limits_detail" = "Les requêtes s’exécutent une par une, car les modèles ne savent pas encore les regrouper. Jusqu’à 128 autres patientent, et un chat en cours passe toujours en premier. Rien n’est conservé entre les requêtes : chacune envoie toute la conversation. Les images ne sont pas encore prises en charge.";
 "port_x_is_in_use" = "Le port %@ est utilisé par une autre app";
 
-"local_model_not_on_phone" = "Ce modèle n'est pas sur cet iPhone, et les iPhone ne téléchargent pas de modèles locaux. Choisissez un autre modèle.";
+"local_model_not_on_phone" = "Ce modèle n'est pas sur cet iPhone, et il est trop volumineux pour y être téléchargé. Choisissez un autre modèle.";
 
 "turn_finished_detail" = "« %@ » est terminé.";
 "paired_with_local_code_detail" = "Associé à Local Code sur cet appareil. Envoyez /help pour voir ce qu’il peut faire.";

@@ -1,6 +1,7 @@
 import Components
 import Localization
 import RemoteAPI
+import SQLiteDflat
 import SnapKit
 import Style
 import UIKit
@@ -18,12 +19,20 @@ protocol OnboardingViewControllerDelegate: AnyObject {
   func onboarding(_ viewController: OnboardingViewController, didSelectLocalModel model: String)
   func onboarding(
     _ viewController: OnboardingViewController,
-    didRequestSignIn provider: AccountManager.SignInProvider,
-    sourceView: UIView)
+    didRequestSignIn provider: AccountManager.SignInProvider)
+  func onboarding(
+    _ viewController: OnboardingViewController, didRequestManageAccountFrom sourceView: UIView)
   func onboarding(
     _ viewController: OnboardingViewController,
     didSetProjectIdea idea: OnboardingState.ProjectIdea, isOn: Bool)
   func onboarding(_ viewController: OnboardingViewController, didSetBotModeEnabled isEnabled: Bool)
+  func onboarding(
+    _ viewController: OnboardingViewController,
+    didSelectTextSize textSize: OnboardingState.TextSize)
+  func onboarding(
+    _ viewController: OnboardingViewController, didSelectTextFontFamily family: String?)
+  func onboarding(
+    _ viewController: OnboardingViewController, didSelectChatWidth chatWidth: ChatWidth)
 }
 
 final class OnboardingViewController: UIViewController {
@@ -85,7 +94,29 @@ final class OnboardingViewController: UIViewController {
     didSet { if isViewLoaded { renderLocalModelSelection() } }
   }
   var connectionMessage = "" { didSet { if isViewLoaded { renderState() } } }
+  /// The sign-in under way, which shows on its button.
+  var signingInProvider: AccountManager.SignInProvider? {
+    didSet { if isViewLoaded, signingInProvider != oldValue { renderState() } }
+  }
+  /// Why the last sign-in did not finish, shown under the sign-in buttons.
+  var signInErrorMessage: String? {
+    didSet { if isViewLoaded, signInErrorMessage != oldValue { renderState() } }
+  }
   var isLoadingModels = false { didSet { if isViewLoaded { renderModelMenu() } } }
+  /// The reading style page's choices, which are app settings. A text size of nil is a message
+  /// zoom that is none of the sizes offered.
+  var textSize: OnboardingState.TextSize? = .normal {
+    didSet { readingStyleController.textSize = textSize }
+  }
+  var textFontFamily: String? {
+    didSet { readingStyleController.textFontFamily = textFontFamily }
+  }
+  var chatWidth = ChatWidth.normal {
+    didSet { readingStyleController.chatWidth = chatWidth }
+  }
+
+  private let workspace: SQLiteWorkspace
+  private let userInterfaceIdiom: UIUserInterfaceIdiom
 
   private lazy var scrollView: UIScrollView = {
     let scrollView = UIScrollView()
@@ -135,7 +166,8 @@ final class OnboardingViewController: UIViewController {
   private lazy var scrollContent = UIView()
   private lazy var column = UIView()
   private lazy var bannerController: EmptyBannerController = {
-    let controller = EmptyBannerController(animatesBackground: false)
+    let controller = EmptyBannerController(
+      animatesBackground: false, fallsAsleep: userInterfaceIdiom != .phone)
     controller.setVisible(true, animated: false)
     return controller
   }()
@@ -298,6 +330,12 @@ final class OnboardingViewController: UIViewController {
       }, for: .touchUpInside)
     return button
   }()
+  // Hidden as a whole with a single local model, as on an iPhone, so its spacing goes with it.
+  private lazy var otherModelsRow: UIStackView = {
+    let stack = UIStackView(arrangedSubviews: [UIView(), otherModelsButton, UIView()])
+    stack.distribution = .equalCentering
+    return stack
+  }()
   private lazy var otherProvidersButton: UIButton = {
     let button = UIButton(type: .system)
     var configuration = UIButton.Configuration.filled()
@@ -352,8 +390,9 @@ final class OnboardingViewController: UIViewController {
     button.addAction(
       UIAction { [weak self, weak button] _ in
         guard let self, let button else { return }
+        // Cloud Compute shows this button once signed in, while its setup has not finished.
         if self.state.selection == .remote(.localCode) {
-          self.delegate?.onboarding(self, didRequestSignIn: .apple, sourceView: button)
+          self.delegate?.onboarding(self, didRequestManageAccountFrom: button)
         } else {
           self.delegate?.onboardingDidRequestConnection(self)
         }
@@ -423,9 +462,9 @@ final class OnboardingViewController: UIViewController {
     button.configuration = configuration
     FontMetrics.default.scaleFont(.systemFont(ofSize: 14, weight: .medium), bindTo: button)
     button.addAction(
-      UIAction { [weak self, weak button] _ in
-        guard let self, let button else { return }
-        self.delegate?.onboarding(self, didRequestSignIn: .apple, sourceView: button)
+      UIAction { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.onboarding(self, didRequestSignIn: .apple)
       }, for: .touchUpInside)
     return button
   }()
@@ -445,9 +484,9 @@ final class OnboardingViewController: UIViewController {
     button.configuration = configuration
     FontMetrics.default.scaleFont(.systemFont(ofSize: 14, weight: .medium), bindTo: button)
     button.addAction(
-      UIAction { [weak self, weak button] _ in
-        guard let self, let button else { return }
-        self.delegate?.onboarding(self, didRequestSignIn: .google, sourceView: button)
+      UIAction { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.onboarding(self, didRequestSignIn: .google)
       }, for: .touchUpInside)
     return button
   }()
@@ -474,7 +513,7 @@ final class OnboardingViewController: UIViewController {
     button.addAction(
       UIAction { [weak self, weak button] _ in
         guard let self, let button else { return }
-        self.delegate?.onboarding(self, didRequestSignIn: .apple, sourceView: button)
+        self.delegate?.onboarding(self, didRequestManageAccountFrom: button)
       }, for: .touchUpInside)
     return button
   }()
@@ -484,6 +523,43 @@ final class OnboardingViewController: UIViewController {
       detail: LocalizedString.forKey("your_account_your_workspace_detail"), badge: "",
       icon: UIImage(named: "person-24")?.withRenderingMode(.alwaysTemplate))
     controller.view.isUserInteractionEnabled = false
+    return controller
+  }()
+
+  private lazy var readingStylePage: UIStackView = {
+    let stack = UIStackView()
+    stack.axis = .vertical
+    stack.spacing = 24
+    return stack
+  }()
+  private lazy var readingStyleHeading: UIStackView = {
+    let stack = UIStackView()
+    stack.axis = .vertical
+    stack.spacing = 4
+    stack.isLayoutMarginsRelativeArrangement = true
+    stack.layoutMargins = UIEdgeInsets(top: 6, left: 12, bottom: 0, right: 12)
+    return stack
+  }()
+  private lazy var readingStyleTitleLabel: UILabel = {
+    let label = UILabel()
+    label.numberOfLines = 0
+    label.text = LocalizedString.forKey("choose_a_reading_style")
+    label.textColor = .primaryText
+    FontMetrics.default.scaleFont(.systemFont(ofSize: 28, weight: .medium), bindTo: label)
+    return label
+  }()
+  private lazy var readingStyleSubtitleLabel: UILabel = {
+    let label = UILabel()
+    label.numberOfLines = 0
+    label.text = LocalizedString.forKey("choose_a_reading_style_detail")
+    label.textColor = .senaryText
+    FontMetrics.default.scaleFont(.systemFont(ofSize: 14, weight: .light), bindTo: label)
+    return label
+  }()
+  private lazy var readingStyleController: OnboardingReadingStyleController = {
+    let controller = OnboardingReadingStyleController(
+      workspace: workspace, userInterfaceIdiom: userInterfaceIdiom)
+    controller.delegate = self
     return controller
   }()
 
@@ -768,6 +844,17 @@ final class OnboardingViewController: UIViewController {
       + formatElapsedTime(initializationDuration)
   }
 
+  init(workspace: SQLiteWorkspace, userInterfaceIdiom: UIUserInterfaceIdiom) {
+    self.workspace = workspace
+    self.userInterfaceIdiom = userInterfaceIdiom
+    super.init(nibName: nil, bundle: nil)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
   deinit { introductionTimer?.invalidate() }
 
   override func viewDidLoad() {
@@ -822,6 +909,7 @@ final class OnboardingViewController: UIViewController {
     pageStack.addArrangedSubview(welcomePage)
     pageStack.addArrangedSubview(modelPage)
     pageStack.addArrangedSubview(accountPage)
+    pageStack.addArrangedSubview(readingStylePage)
     pageStack.addArrangedSubview(finishedPage)
 
     for line in welcomeLines {
@@ -862,8 +950,6 @@ final class OnboardingViewController: UIViewController {
       }
     }
     localModelContent.addArrangedSubview(localModelOptions)
-    let otherModelsRow = UIStackView(arrangedSubviews: [UIView(), otherModelsButton, UIView()])
-    otherModelsRow.distribution = .equalCentering
     localModelContent.addArrangedSubview(otherModelsRow)
 
     accountPage.addArrangedSubview(accountHeading)
@@ -881,6 +967,11 @@ final class OnboardingViewController: UIViewController {
     googleSignInButton.snp.makeConstraints { make in
       make.height.greaterThanOrEqualTo(48)
     }
+
+    readingStylePage.addArrangedSubview(readingStyleHeading)
+    readingStyleHeading.addArrangedSubview(readingStyleTitleLabel)
+    readingStyleHeading.addArrangedSubview(readingStyleSubtitleLabel)
+    readingStylePage.addArrangedSubview(readingStyleController.view)
 
     finishedPage.addArrangedSubview(finishedHeading)
     finishedHeading.addArrangedSubview(finishedTitleLabel)
@@ -998,6 +1089,7 @@ final class OnboardingViewController: UIViewController {
       for case let row as UIStackView in projectIdeaRows.arrangedSubviews {
         row.axis = compact ? .vertical : .horizontal
       }
+      readingStyleController.isCompact = compact
       for spacer in columnSpacers {
         spacer.isHidden = compact
       }
@@ -1116,6 +1208,7 @@ final class OnboardingViewController: UIViewController {
     setHidden(state.step != .welcome, for: welcomePage)
     setHidden(state.step != .model, for: modelPage)
     setHidden(state.step != .account, for: accountPage)
+    setHidden(state.step != .readingStyle, for: readingStylePage)
     setHidden(state.step != .finished, for: finishedPage)
     footerBannerController.setVisible(
       state.step != .welcome || state.welcomeCompleted,
@@ -1136,6 +1229,7 @@ final class OnboardingViewController: UIViewController {
     case .welcome: title = LocalizedString.forKey("welcome_to_local_code")
     case .model: title = LocalizedString.forKey("choose_a_model")
     case .account: title = LocalizedString.forKey("create_an_account")
+    case .readingStyle: title = LocalizedString.forKey("choose_a_reading_style")
     case .finished: title = LocalizedString.forKey("you_are_all_set")
     }
     trackerLabel.text = compactLayout ? progress : "\(progress) · \(title)"
@@ -1206,10 +1300,15 @@ final class OnboardingViewController: UIViewController {
         state.selection == .remote(.localCode)
           ? "sign_in_to_use_cloud_compute_detail" : "local_code_account_optional_detail")
     setHidden(state.isAccountSignedIn, for: accountButtons)
+    // The tapped button turns into a spinner until the sign-in is over.
+    appleSignInButton.configuration?.showsActivityIndicator = signingInProvider == .apple
+    googleSignInButton.configuration?.showsActivityIndicator = signingInProvider == .google
     setHidden(!state.isAccountSignedIn, for: accountManageButton)
-    setHidden(!state.isAccountSignedIn, for: accountStatusLabel)
+    setHidden(!state.isAccountSignedIn && signInErrorMessage == nil, for: accountStatusLabel)
     accountStatusLabel.text =
-      LocalizedString.forKey(
+      !state.isAccountSignedIn
+      ? signInErrorMessage
+      : LocalizedString.forKey(
         state.selection == .remote(.localCode) && !state.canContinue
           ? "signed_in_setting_up_cloud_compute" : "you_are_signed_in_to_local_code")
   }
@@ -1264,7 +1363,7 @@ final class OnboardingViewController: UIViewController {
       controller.isSelected = id == selectedLocalModel
       setHidden(!otherModelsExpanded && !controller.isSelected, for: controller.view)
     }
-    setHidden(localModels.count < 2, for: otherModelsButton)
+    setHidden(localModels.count < 2, for: otherModelsRow)
     otherModelsButton.accessibilityValue = LocalizedString.forKey(
       otherModelsExpanded ? "expanded" : "collapsed")
     otherModelsButton.configuration?.image = UIImage(
@@ -1301,6 +1400,27 @@ extension OnboardingViewController: OnboardingModelControllerDelegate {
 extension OnboardingViewController: OnboardingLocalModelControllerDelegate {
   func onboardingLocalModelControllerDidSelect(_ controller: OnboardingLocalModelController) {
     delegate?.onboarding(self, didSelectLocalModel: controller.model.id)
+  }
+}
+
+extension OnboardingViewController: OnboardingReadingStyleControllerDelegate {
+  func onboardingReadingStyleController(
+    _ controller: OnboardingReadingStyleController,
+    didSelectTextSize textSize: OnboardingState.TextSize
+  ) {
+    delegate?.onboarding(self, didSelectTextSize: textSize)
+  }
+
+  func onboardingReadingStyleController(
+    _ controller: OnboardingReadingStyleController, didSelectTextFontFamily family: String?
+  ) {
+    delegate?.onboarding(self, didSelectTextFontFamily: family)
+  }
+
+  func onboardingReadingStyleController(
+    _ controller: OnboardingReadingStyleController, didSelectChatWidth chatWidth: ChatWidth
+  ) {
+    delegate?.onboarding(self, didSelectChatWidth: chatWidth)
   }
 }
 
