@@ -185,7 +185,7 @@ final class OnboardingReadingStyleController {
     stack.addArrangedSubview(previewController.view)
     stack.addArrangedSubview(choicesStack)
     previewController.view.snp.makeConstraints { make in
-      previewWidthConstraint = make.width.equalTo(400).priority(.high).constraint
+      previewWidthConstraint = make.width.equalTo(400).priority(.low).constraint
       make.width.lessThanOrEqualTo(stack)
     }
 

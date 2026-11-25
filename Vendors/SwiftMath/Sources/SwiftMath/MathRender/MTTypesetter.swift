@@ -738,64 +738,41 @@ class MTTypesetter {
         }
 
       case .accent:
-        if maxWidth > 0 {
-          // When line wrapping is enabled, render the accent properly but inline
-          // to avoid premature line flushing
-
-          let accent = atom as! MTAccent
-
-          // Get the base character from innerList
-          var baseChar = ""
-          if let innerList = accent.innerList, !innerList.atoms.isEmpty {
-            // Convert innerList to string
-            baseChar = MTMathListBuilder.mathListToString(innerList)
-          }
-
-          // Combine base character with accent to create proper composed character
-          let accentChar = atom.nucleus
-          let composedString = baseChar + accentChar
-
-          // Normalize to composed form (NFC) to get proper accented character
-          let normalizedString = composedString.precomposedStringWithCanonicalMapping
-
-          // Add inter-element spacing
-          if prevNode != nil {
-            let interElementSpace = self.getInterElementSpace(prevNode!.type, right: .ordinary)
+        let accent = atom as! MTAccent
+        if maxWidth > 0, accent.fontStyle == .roman,
+          accent.subScript == nil, accent.superScript == nil,
+          let innerList = accent.innerList, innerList.atoms.count == 1,
+          let base = innerList.atoms.first, [.roman, .defaultStyle].contains(base.fontStyle),
+          [.ordinary, .variable, .number].contains(base.type), base.nucleus.count == 1,
+          base.subScript == nil, base.superScript == nil
+        {
+          // Unicode text accents have an unstyled base that inherits the outer Roman style.
+          let text = (base.nucleus + accent.nucleus).precomposedStringWithCanonicalMapping
+          if let prevNode {
+            let spacing = self.getInterElementSpace(prevNode.type, right: .ordinary)
             if currentLine.length > 0 {
-              if interElementSpace > 0 {
+              if spacing > 0 {
                 currentLine.addAttribute(
-                  kCTKernAttributeName as NSAttributedString.Key,
-                  value: NSNumber(floatLiteral: interElementSpace),
+                  kCTKernAttributeName as NSAttributedString.Key, value: NSNumber(value: spacing),
                   range: currentLine.mutableString.rangeOfComposedCharacterSequence(
                     at: currentLine.length - 1))
               }
             } else {
-              currentPosition.x += interElementSpace
+              currentPosition.x += spacing
             }
           }
-
-          // Add the properly composed accented character
-          let current = NSAttributedString(string: normalizedString)
-          currentLine.append(current)
-
-          // Check if we should break the line
+          currentLine.append(NSAttributedString(string: text))
           self.checkAndBreakLine()
-
-          // Add to atom list
           if currentLineIndexRange.location == NSNotFound {
             currentLineIndexRange = atom.indexRange
           } else {
             currentLineIndexRange.length += atom.indexRange.length
           }
           currentAtoms.append(atom)
-
-          // Treat accent as ordinary for spacing purposes
           atom.type = .ordinary
         } else {
-          // Original behavior when no width constraint
-          // Check if we need to break the line due to width constraints
+          // Mathematical accentees retain their structure and script placement.
           self.checkAndBreakLine()
-          // stash the existing layout
           if currentLine.length > 0 {
             self.addDisplayLine()
           }
@@ -803,12 +780,9 @@ class MTTypesetter {
           self.addInterElementSpace(prevNode, currentType: .ordinary)
           atom.type = .ordinary
 
-          let accent = atom as! MTAccent?
           let display = self.makeAccent(accent)
           displayAtoms.append(display!)
           currentPosition.x += display!.width
-
-          // add super scripts || subscripts
           if atom.subScript != nil || atom.superScript != nil {
             self.makeScripts(
               atom, display: display, index: UInt(atom.indexRange.location), delta: 0)
@@ -1011,11 +985,12 @@ class MTTypesetter {
     let typesetter = CTTypesetterCreateWithAttributedString(attrString as CFAttributedString)
     let suggestedBreak = CTTypesetterSuggestLineBreak(typesetter, 0, Double(maxWidth))
 
-    guard suggestedBreak > 0 && suggestedBreak < text.count else {
+    guard suggestedBreak > 0 && suggestedBreak < text.utf16.count,
+      let breakIndex = String.Index(
+        text.utf16.index(text.utf16.startIndex, offsetBy: suggestedBreak), within: text)
+    else {
       return nil
     }
-
-    let breakIndex = text.index(text.startIndex, offsetBy: suggestedBreak)
 
     // Conservative check: verify we're not breaking within a number
     if isBreakingSafeForNumbers(text: text, breakIndex: breakIndex) {

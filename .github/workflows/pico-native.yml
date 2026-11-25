@@ -11,6 +11,13 @@ permissions:
   contents: read
 
 jobs:
+  math-layout:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test SwiftMath layout and wrapping
+        run: swift test --package-path Vendors/SwiftMath
   native-library:
     runs-on: xcode-27
     timeout-minutes: 60
