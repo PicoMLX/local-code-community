@@ -839,7 +839,7 @@ class MTTypesetter {
         // This works for text, mixed text+math, and simple equations
         let isSimpleAtom = (atom.subScript == nil && atom.superScript == nil)
 
-        if isSimpleAtom && maxWidth > 0 {
+        while isSimpleAtom && maxWidth > 0 {
           // Measure the current line width
           let attrString = currentLine.mutableCopy() as! NSMutableAttributedString
           attrString.addAttribute(
@@ -854,7 +854,8 @@ class MTTypesetter {
 
             // Use Unicode-aware line breaking with number protection
             if let breakIndex = findBestBreakPoint(
-              in: currentText, font: styleFont.ctFont, maxWidth: maxWidth)
+              in: currentText, font: styleFont.ctFont, maxWidth: maxWidth),
+              breakIndex > currentText.startIndex, breakIndex < currentText.endIndex
             {
               // Split the line at the suggested break point
               let breakOffset = currentText.distance(from: currentText.startIndex, to: breakIndex)
@@ -874,7 +875,9 @@ class MTTypesetter {
                 // Need to break earlier - find previous break point
                 let firstLineText = firstLine.string
                 if let earlierBreakIndex = findBestBreakPoint(
-                  in: firstLineText, font: styleFont.ctFont, maxWidth: maxWidth)
+                  in: firstLineText, font: styleFont.ctFont, maxWidth: maxWidth),
+                  earlierBreakIndex > firstLineText.startIndex,
+                  earlierBreakIndex < firstLineText.endIndex
                 {
                   let earlierOffset = firstLineText.distance(
                     from: firstLineText.startIndex, to: earlierBreakIndex)
@@ -900,6 +903,8 @@ class MTTypesetter {
                   currentLine = NSMutableAttributedString(string: remainingText)
                   currentAtoms = []
                   currentLineIndexRange = NSMakeRange(NSNotFound, NSNotFound)
+                } else {
+                  break
                 }
               } else {
                 // First line fits - proceed with normal wrapping
@@ -923,8 +928,12 @@ class MTTypesetter {
                 currentAtoms = []
                 currentLineIndexRange = NSMakeRange(NSNotFound, NSNotFound)
               }
+            } else {
+              // An unbreakable word or protected number may still overflow.
+              break
             }
-            // If no break point found, let it overflow (better than breaking mid-word)
+          } else {
+            break
           }
         }
         // add the atom to the current range

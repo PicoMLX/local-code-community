@@ -249,9 +249,13 @@ public class MTMathUILabel: MTView {
 
   func _layoutSubviews() {
     if _mathList != nil {
-      // Use the effective width for layout
-      let effectiveWidth =
-        _preferredMaxLayoutWidth > 0 ? _preferredMaxLayoutWidth : bounds.size.width
+      #if os(macOS)
+        // Rendering may reuse a previous formula's frame; only an explicit width constrains layout.
+        let effectiveWidth = _preferredMaxLayoutWidth
+      #else
+        let effectiveWidth =
+          _preferredMaxLayoutWidth > 0 ? _preferredMaxLayoutWidth : bounds.size.width
+      #endif
       let availableWidth = effectiveWidth - contentInsets.left - contentInsets.right
 
       // print("Pre list = \(_mathList!)")

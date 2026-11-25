@@ -103,4 +103,62 @@ final class MTWidthConstrainedLayoutTests: XCTestCase {
       "a\u{0301}b\u{0301} c\u{0301}d\u{0301} e\u{0301}f\u{0301}",
       after: "a\u{0301}b\u{0301} ", before: "c\u{0301}")
   }
+
+  private func assertRenderedWrapping(_ text: String, widthOf prefix: String) throws {
+    let maxWidth = try width(prefix)
+    let list = MTMathList()
+    list.add(MTMathAtom(type: .ordinary, value: text))
+    let layout = try XCTUnwrap(
+      MTTypesetter.createLineForMathList(
+        list, font: font, style: .display, maxWidth: maxWidth))
+    let lines = layout.subDisplays.compactMap { $0 as? MTCTLineDisplay }
+    let rendered = lines.map { $0.attributedString?.string ?? "" }.joined()
+
+    XCTAssertGreaterThanOrEqual(lines.count, 3)
+    XCTAssertEqual(
+      Array(rendered.utf16), Array(text.utf16), "Wrapping must preserve every UTF-16 unit")
+    for line in lines {
+      XCTAssertLessThanOrEqual(line.width, maxWidth + 0.001, "Every rendered line must fit")
+      let text = try XCTUnwrap(line.attributedString?.string)
+      XCTAssertFalse(text.isEmpty)
+      XCTAssertNotEqual(text.unicodeScalars.first?.properties.generalCategory, .nonspacingMark)
+    }
+  }
+
+  func testRenderedSupplementaryMathLettersWrapAcrossMultipleLines() throws {
+    try assertRenderedWrapping(
+      "𝑥𝑦 𝑧𝑤 𝑎𝑏 𝑐𝑑 𝑒𝑓 𝑖𝑗 𝑘𝑙 𝑚𝑛", widthOf: "𝑥𝑦 𝑧𝑤 ")
+  }
+
+  func testRenderedCombiningAccentsWrapAcrossMultipleLines() throws {
+    try assertRenderedWrapping(
+      "a\u{0301}b\u{0301} c\u{0301}d\u{0301} e\u{0301}f\u{0301} g\u{0301}h\u{0301} i\u{0301}j\u{0301} k\u{0301}l\u{0301} m\u{0301}n\u{0301} o\u{0301}p\u{0301}",
+      widthOf: "a\u{0301}b\u{0301} c\u{0301}d\u{0301} ")
+  }
+
+  func testFusedTextContinuesWrappingUntilEveryLineFits() throws {
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+    let maxWidth = try width("alpha beta ")
+    let layout = try display("\\text{\(text)}", maxWidth: maxWidth)
+    let lines = layout.subDisplays.compactMap { $0 as? MTCTLineDisplay }
+
+    XCTAssertGreaterThan(lines.count, 2, "The entire fused text atom must wrap, including its tail")
+    XCTAssertEqual(lines.map { $0.attributedString?.string ?? "" }.joined(), text)
+    for line in lines {
+      XCTAssertLessThanOrEqual(line.width, maxWidth + 0.001, "Every rendered line must fit")
+    }
+    for (earlier, later) in zip(lines, lines.dropFirst()) {
+      XCTAssertGreaterThan(earlier.position.y, later.position.y)
+    }
+  }
+
+  func testProtectedNumberWithoutInteriorBreakRemainsOnOneLine() throws {
+    let text = "12345678"
+    let layout = try display("\\text{\(text)}", maxWidth: width("1"))
+    let lines = layout.subDisplays.compactMap { $0 as? MTCTLineDisplay }
+
+    XCTAssertEqual(
+      lines.count, 1, "Number protection must not create empty lines or retry an unchanged tail")
+    XCTAssertEqual(lines.first?.attributedString?.string, text)
+  }
 }
