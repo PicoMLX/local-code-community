@@ -727,6 +727,12 @@
 
 "code_font_detail" = "更改消息中代码的字体，包括正在输入的消息。";
 
+"chat_width" = "聊天宽度";
+
+"chat_width_detail" = "更改聊天在大窗口中的宽度。“宽”可为代码和表格留出更多空间。";
+
+"wide" = "宽";
+
 "system" = "系统";
 
 "other_dot" = "其他...";
@@ -2523,6 +2529,9 @@
 "new_chat" = "新建聊天";
 "focus_chat" = "聚焦聊天";
 "stop_conversation" = "停止对话";
+"zoom_in" = "放大";
+"zoom_out" = "缩小";
+"actual_size" = "实际大小";
 
 "thread_completed_title" = "工作已完成";
 
@@ -2667,6 +2676,13 @@
 "your_account_your_workspace_detail" = "你的设置和工作区会在所有设备间保持同步。";
 "you_are_all_set" = "一切就绪！";
 "you_are_all_set_detail" = "下面简单介绍 Local Code 的组织方式。";
+"choose_a_reading_style" = "选择阅读样式";
+"choose_a_reading_style_detail" = "选择对话的显示方式。之后可以在“机器设置”中更改。";
+"text_size" = "文字大小";
+"smaller" = "较小";
+"bigger" = "较大";
+"rename_these_photos_by_date" = "按日期重命名这些照片。";
+"photos_renamed_by_date_detail" = "我已按拍摄日期重命名每张照片，没有删除任何内容。";
 "threads" = "对话";
 "onboarding_workspace_detail" = "工作区是 Local Code 可以读写的目录。“应用文档内”将一切限定在应用内；“本地”则可访问整台 Mac。可按项目分别设置。";
 "onboarding_workspace_bot_detail" = "工作区是 Local Code 可以读写的目录。“应用文档内”将一切限定在应用内；“本地”则可访问整台 Mac。可按机器人分别设置。";
@@ -2857,7 +2873,7 @@
 "serve_limits_detail" = "由于模型尚不支持批处理，请求会逐个运行。最多还可有 128 个请求排队，正在进行的聊天始终优先。请求之间不保存任何内容，因此每个请求都要发送完整对话。暂不支持图片。";
 "port_x_is_in_use" = "端口 %@ 正被其他应用使用";
 
-"local_model_not_on_phone" = "此模型不在这台 iPhone 上，iPhone 不会下载本地模型。请选择其他模型。";
+"local_model_not_on_phone" = "此模型不在这台 iPhone 上，而且体积过大，无法在此下载。请选择其他模型。";
 
 "turn_finished_detail" = "“%@”已完成。";
 "paired_with_local_code_detail" = "已与此设备上的 Local Code 配对。发送 /help 查看它能做什么。";

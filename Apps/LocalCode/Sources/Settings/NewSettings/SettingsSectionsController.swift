@@ -112,14 +112,13 @@ final class SettingsSectionsController {
   let view = UIView(frame: .zero)
   weak var delegate: SettingsSectionsControllerDelegate?
   private let workspace: SQLiteWorkspace
-  private let isOnDeviceAvailable: Bool
   private let showsAccountBalance: Bool
   private var isViewLoaded = false
   private var verticalScrollIndicatorController: VerticalScrollIndicatorController? = nil
   private let sections: [SettingsSection]
   private var displayingSections: [SettingsSection: any SettingsViewObservable] = [:]
   private var sectionViewModifiers: [SettingsSection: any SettingsViewModifying] = [:]
-  var reasoningEffort: ReasoningEffort = .high {
+  var reasoningEffort: ReasoningEffort = .deviceDefault {
     didSet {
       guard reasoningEffort != oldValue else { return }
       updateSettingsSections()
@@ -385,9 +384,8 @@ final class SettingsSectionsController {
     return view
   }()
 
-  init(workspace: SQLiteWorkspace, isOnDeviceAvailable: Bool, showsAccountBalance: Bool) {
+  init(workspace: SQLiteWorkspace, showsAccountBalance: Bool) {
     self.workspace = workspace
-    self.isOnDeviceAvailable = isOnDeviceAvailable
     self.showsAccountBalance = showsAccountBalance
     self.sections = [
       .whereModelsRun,
@@ -578,6 +576,7 @@ final class SettingsSectionsController {
     var apiKeyItem = SettingsTextFieldItem(
       value: apiKey,
       placeholderText: LocalizedString.forKey("enter_your_api_key"),
+      isSecret: true,
       didChangeText: { [weak self] text in
         guard let self else { return }
         self.delegate?.settingsSectionsController(
@@ -618,10 +617,8 @@ final class SettingsSectionsController {
   }
 
   private func whereModelsRunSection() -> SettingsSectionItem {
-    let providers: [RemoteProvider?] =
-      (isOnDeviceAvailable ? [nil] : []) + RemoteProvider.allCases.map(Optional.some)
-    // No provider is On Device. A phone, which falls back to a provider, has none only while it
-    // runs a local model it downloaded earlier.
+    // No provider is On Device, which a phone lists too: it goes back to a local model it has.
+    let providers: [RemoteProvider?] = [nil] + RemoteProvider.allCases.map(Optional.some)
     let noProviderTitle = LocalizedString.forKey("on_device")
     let provider = remoteProvider ?? .openRouter
     let requiresHostedSignIn = remoteProvider == .localCode && !isHostedAccountSignedIn

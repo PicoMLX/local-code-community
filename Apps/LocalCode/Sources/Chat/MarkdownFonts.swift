@@ -24,6 +24,7 @@ final class MarkdownFonts {
     var textFamily: String?
     var codeFamily: String?
     var codeFonts: [CGFloat: UIFont] = [:]
+    var messageZoom = 100
   }
 
   // The syntax highlighter asks for code fonts while styling, which may happen off the main queue.
@@ -79,13 +80,39 @@ final class MarkdownFonts {
     }
   }
 
+  /// The size of message text in the conversation, in percent of the size the font size setting
+  /// gives. The chat input keeps its size. ChatWorkflow keeps the zoom in the workspace dictionary
+  /// as `message_zoom` and sets it here.
+  var messageZoom: Int {
+    get { state.withLock { $0.messageZoom } }
+    set {
+      dispatchPrecondition(condition: .onQueue(.main))
+      guard newValue != messageZoom else { return }
+      state.withLock { $0.messageZoom = newValue }
+      // The messages set their fonts from messageFont(replacing:) in their font size bindings.
+      FontMetrics.default.updateFontMetrics()
+    }
+  }
+
   /// The text font in place of `font`, the regular system font at the size the font size setting
   /// gives.
   func textFont(replacing font: UIFont) -> UIFont {
-    guard let family = textFamily else { return font }
+    textFont(replacing: font, family: textFamily)
+  }
+
+  /// The text font of `family` in place of `font`, whichever text font is chosen. Nil is the
+  /// system font.
+  func textFont(replacing font: UIFont, family: String?) -> UIFont {
+    guard let family else { return font }
     return UIFont(
       descriptor: UIFontDescriptor(fontAttributes: [.family: family]),
       size: font.pointSize * (Self.textScales[family] ?? 1))
+  }
+
+  /// The text font of a message in the conversation: the text font at the message zoom.
+  func messageFont(replacing font: UIFont) -> UIFont {
+    let font = textFont(replacing: font)
+    return font.withSize(font.pointSize * CGFloat(messageZoom) / 100)
   }
 
   /// The chosen code font, or nil for SF Mono, which the syntax highlighter supplies.

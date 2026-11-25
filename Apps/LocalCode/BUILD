@@ -3,6 +3,7 @@ load("@build_bazel_rules_apple//apple:macos.bzl", "macos_command_line_applicatio
 load("@build_bazel_rules_apple//apple:resources.bzl", "apple_resource_group")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_binary", "swift_library", "swift_test")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
+load(":pico_build_info.bzl", "pico_build_info")
 
 # local-code-community leaves out the team's provisioning profiles. Without one, simulator builds
 # still work, and device builds need a profile of your own at this path.
@@ -25,6 +26,8 @@ exports_files([
     "Sources/Models/GLM5_3ContextCache.swift",
     "Sources/Models/GLM5_3Image.swift",
     "Sources/Models/GLM5_3TextGenerator.swift",
+    "Sources/Models/Inkling2MiniContextCache.swift",
+    "Sources/Models/Inkling2MiniTextGenerator.swift",
     "Sources/Models/Inkling2SmallContextCache.swift",
     "Sources/Models/Inkling2SmallImage.swift",
     "Sources/Models/Inkling2SmallTextGenerator.swift",
@@ -758,6 +761,28 @@ swift_test(
 )
 
 swift_test(
+    name = "Inkling2MiniContextCacheTests",
+    srcs = [
+        "Sources/Agent/DeepSeekTextGenerator.swift",
+        "Sources/Agent/TextGenerator.swift",
+        "Sources/Models/ContextCache.swift",
+        "Sources/Models/Inkling2MiniContextCache.swift",
+        "Sources/Models/Inkling2MiniTextGenerator.swift",
+        "Sources/Models/Inkling2SmallContextCache.swift",
+        "Sources/Models/Inkling2SmallImage.swift",
+        "Sources/Models/Inkling2SmallTextGenerator.swift",
+    ] + glob(["Tests/Inkling2MiniContextCacheTests/**/*.swift"]),
+    deps = [
+        "//Libraries/BinaryResources",
+        "//Libraries/DataModels",
+        "//Libraries/ProjectHistoryManager",
+        "//Libraries/SwiftLLM",
+        "//Libraries/Tokenizer",
+        "@s4nnc//nnc",
+    ],
+)
+
+swift_test(
     name = "DeepSeek4_1ResidentMappingTests",
     srcs = [
         "Sources/Agent/DeepSeekTextGenerator.swift",
@@ -977,6 +1002,7 @@ swift_library(
         "Sources/Agent/Inkling2CodeAgent.swift",
         "Sources/Agent/Inkling2CodeAgent+Compact.swift",
         "Sources/Agent/Inkling2CodeAgent+Parse.swift",
+        "Sources/Agent/Inkling2TextGenerator.swift",
         "Sources/Agent/Inkling2ToolCallParser.swift",
         "Sources/Agent/MarkdownCode.swift",
         "Sources/Agent/MemoryContext.swift",
@@ -1014,6 +1040,8 @@ swift_library(
         "Sources/Models/GLM5_3ContextCache.swift",
         "Sources/Models/GLM5_3Image.swift",
         "Sources/Models/GLM5_3TextGenerator.swift",
+        "Sources/Models/Inkling2MiniContextCache.swift",
+        "Sources/Models/Inkling2MiniTextGenerator.swift",
         "Sources/Models/Inkling2SmallContextCache.swift",
         "Sources/Models/Inkling2SmallImage.swift",
         "Sources/Models/Inkling2SmallTextGenerator.swift",
@@ -1332,6 +1360,7 @@ swift_binary(
     name = "AgentSchedulerHarness",
     srcs = [
         "Debug/AgentSchedulerHarness.swift",
+        "Sources/Agent/AgentActivity.swift",
         "Sources/Agent/AgentScheduler.swift",
         "Sources/Agent/AgentTranscript.swift",
         "Sources/Agent/BashTools.swift",
@@ -1404,6 +1433,7 @@ swift_binary(
     name = "ResponsesServeProbe",
     srcs = [
         "Debug/ResponsesServeProbe.swift",
+        "Sources/Agent/AgentActivity.swift",
         "Sources/Agent/AgentScheduler.swift",
         "Sources/Agent/AgentTranscript.swift",
         "Sources/Agent/BashTools.swift",
@@ -1411,6 +1441,7 @@ swift_binary(
         "Sources/Agent/CodeAgent.swift",
         "Sources/Agent/CodeAgentEnvironment.swift",
         "Sources/Agent/CodeAgentReasoningEffort.swift",
+        "Sources/Agent/CodeAgentReasoningEffort+DeviceDefault.swift",
         "Sources/Agent/DeepSeek4CodeAgent.swift",
         "Sources/Agent/DeepSeek4CodeAgent+Compact.swift",
         "Sources/Agent/DeepSeek4CodeAgent+Parse.swift",
@@ -1426,6 +1457,7 @@ swift_binary(
         "Sources/Agent/Inkling2CodeAgent.swift",
         "Sources/Agent/Inkling2CodeAgent+Compact.swift",
         "Sources/Agent/Inkling2CodeAgent+Parse.swift",
+        "Sources/Agent/Inkling2TextGenerator.swift",
         "Sources/Agent/Inkling2ToolCallParser.swift",
         "Sources/Agent/MarkdownCode.swift",
         "Sources/Agent/MemoryContext.swift",
@@ -1458,6 +1490,8 @@ swift_binary(
         "Sources/Models/GLM5_3ContextCache.swift",
         "Sources/Models/GLM5_3Image.swift",
         "Sources/Models/GLM5_3TextGenerator.swift",
+        "Sources/Models/Inkling2MiniContextCache.swift",
+        "Sources/Models/Inkling2MiniTextGenerator.swift",
         "Sources/Models/Inkling2SmallContextCache.swift",
         "Sources/Models/Inkling2SmallImage.swift",
         "Sources/Models/Inkling2SmallTextGenerator.swift",
@@ -1631,5 +1665,13 @@ macos_dylib(
     name = "PicoLocalCodeNative",
     exported_symbols_lists = ["NativeGenerationBridge.exports"],
     minimum_os_version = "27.0",
-    deps = [":NativeGenerationBridge"],
+    deps = [":NativeGenerationBridge", ":NativeBuildInfo"],
+)
+
+pico_build_info(name = "NativeBuildInfoSource")
+
+cc_library(
+    name = "NativeBuildInfo",
+    srcs = [":NativeBuildInfoSource"],
+    alwayslink = True,
 )

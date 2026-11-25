@@ -5,10 +5,12 @@ import Foundation
 /// Text messages (`<|content_text|>`, and `<|content_tool_error|>` and `<|content_invoke_tool_text|>`,
 /// which the official response parser reads as content too) make up the visible text; thinking
 /// messages are left out. A tool call is a message whose header names the tool and whose body is
-/// `{"name":NAME,"args":{...}}` after `<|content_invoke_tool_json|>`. The body's name wins over the
-/// header's, as in the official response parser. String arguments are reported as strings and other
-/// values as their JSON text. A message ends only at `<|end_message|>`, so a literal one inside an
-/// argument ends the call early.
+/// `{"name":NAME,"args":{...}}` after `<|content_invoke_tool_json|>`. The chat template writes the
+/// same name in both. When the model's differ, the header's wins: Inkling 2 Mini has written a
+/// `bash_wait` header over a body naming `bash`, with `bash_wait`'s arguments. The official response
+/// parser reads only the body's, which names a call without a header. String arguments are
+/// reported as strings and other values as their JSON text. A message ends only at
+/// `<|end_message|>`, so a literal one inside an argument ends the call early.
 public struct Inkling2ToolCallParser {
   static let modelMessageStart = "<|message_model|>"
   static let endMessage = "<|end_message|>"
@@ -167,10 +169,9 @@ public struct Inkling2ToolCallParser {
     } else {
       object = partialJSONObject(body)
     }
-    let headerName = header.trimmingCharacters(in: .whitespacesAndNewlines)
-    var name = (object?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var name = header.trimmingCharacters(in: .whitespacesAndNewlines)
     if !isValidName(name) {
-      name = headerName
+      name = (object?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
     guard isValidName(name) else { return nil }
     guard let object else {
@@ -201,25 +202,121 @@ public struct Inkling2ToolCallParser {
     return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
   }
 
-  /// Closes a body cut off while streaming: inside a string, after a key, or between values.
+  /// Reads a body cut off while streaming as the object written so far. The body closes where it
+  /// stops inside a string argument or a number, and otherwise after its last whole value: a key
+  /// still being written, or one whose value has not started, is left out, as the other parsers
+  /// leave out a parameter until its value starts. An argument then only grows, and none drops out
+  /// once it shows. Text after the object, such as an end marker still streaming in, is ignored.
   private static func partialJSONObject(_ text: String) -> [String: Any]? {
-    var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard text.hasPrefix("{") else { return nil }
-    // A cut escape sequence cannot be closed.
-    let trailingBackslashes = text.reversed().prefix { $0 == "\\" }.count
-    if trailingBackslashes % 2 == 1 {
-      text.removeLast()
+    enum Expectation {
+      case value
+      case key
+      case colon
+      case separator
     }
-    if text.hasSuffix(",") {
-      text.removeLast()
-    }
-    // Most of a call streams inside a string argument, so try closing one first.
-    for suffix in ["\"}}", "}}", "", "}", "\"}", "null}}", "\":null}}", "]}}", "\"]}}", "}}}"] {
-      if let object = jsonObject(text + suffix) {
-        return object
+    let scalars = text.unicodeScalars
+    let whitespace = " \t\n\r".unicodeScalars
+    var expectation = Expectation.value
+    // The closing bracket of each open object and array, innermost last.
+    var closers = ""
+    // Where the body last could close, and the brackets open there.
+    var closable = (end: scalars.startIndex, closers: closers)
+    var index = scalars.startIndex
+    scan: while index < scalars.endIndex {
+      let scalar = scalars[index]
+      let next = scalars.index(after: index)
+      guard !whitespace.contains(scalar) else {
+        index = next
+        continue
+      }
+      switch (expectation, scalar) {
+      case (.value, "{"), (.value, "["):
+        closers.append(scalar == "{" ? "}" : "]")
+        expectation = scalar == "{" ? .key : .value
+        index = next
+        closable = (index, closers)
+      case (.separator, "}"), (.separator, "]"), (.key, "}"), (.value, "]"):
+        guard closers.last == Character(scalar) else { break scan }
+        closers.removeLast()
+        index = next
+        guard !closers.isEmpty else { return jsonObject(String(scalars[..<index])) }
+        expectation = .separator
+        closable = (index, closers)
+      case (.separator, ","):
+        expectation = closers.last == "}" ? .key : .value
+        index = next
+      case (.colon, ":"):
+        expectation = .value
+        index = next
+      case (.value, "\""), (.key, "\""):
+        // The end of the string's last whole character or escape sequence.
+        var contentEnd = next
+        var isClosed = false
+        var cursor = next
+        while cursor < scalars.endIndex, !isClosed {
+          if scalars[cursor] == "\"" {
+            isClosed = true
+            continue
+          }
+          var end = scalars.index(after: cursor)
+          if scalars[cursor] == "\\" {
+            // An escape sequence cut short cannot be read, and neither can a high surrogate
+            // before its low surrogate arrives.
+            guard end < scalars.endIndex else { break }
+            if scalars[end] == "u" {
+              guard let codeEnd = scalars.index(end, offsetBy: 5, limitedBy: scalars.endIndex)
+              else { break }
+              let code = UInt32(String(scalars[scalars.index(after: end)..<codeEnd]), radix: 16)
+              if let code, (0xD800...0xDBFF).contains(code),
+                scalars.index(codeEnd, offsetBy: 6, limitedBy: scalars.endIndex) == nil,
+                "\\u".unicodeScalars.starts(with: scalars[codeEnd...].prefix(2))
+              {
+                break
+              }
+              end = codeEnd
+            } else {
+              end = scalars.index(after: end)
+            }
+          }
+          cursor = end
+          contentEnd = end
+        }
+        guard isClosed else {
+          // A string argument closes where it stops, once it has content. The name, directly in
+          // the body, counts only when whole.
+          guard expectation == .value, closers.count > 1, contentEnd > next else { break scan }
+          return jsonObject(String(scalars[..<contentEnd]) + "\"" + String(closers.reversed()))
+        }
+        index = scalars.index(after: cursor)
+        if expectation == .key {
+          expectation = .colon
+        } else {
+          expectation = .separator
+          closable = (index, closers)
+        }
+      case (.value, _):
+        // A number, true, false or null.
+        var end = index
+        while end < scalars.endIndex, !",}]".unicodeScalars.contains(scalars[end]),
+          !whitespace.contains(scalars[end])
+        {
+          end = scalars.index(after: end)
+        }
+        if end == scalars.endIndex, !["true", "false", "null"].contains(String(scalars[index...])) {
+          // A number cut off reads up to its last digit. Other text is not a value yet.
+          while end > index, !("0"..."9").contains(scalars[scalars.index(before: end)]) {
+            end = scalars.index(before: end)
+          }
+          guard end > index else { break scan }
+        }
+        index = end
+        expectation = .separator
+        closable = (index, closers)
+      default:
+        break scan
       }
     }
-    return nil
+    return jsonObject(String(scalars[..<closable.end]) + String(closable.closers.reversed()))
   }
 
   /// JSON text as Python's `json.dumps(value, sort_keys=True, separators=(",", ":"),

@@ -54,6 +54,21 @@ final class ChatInputController {
     }
   }
 
+  /// Leaves the model out of the row under the text, where the history slider then runs on to
+  /// dictation. The onboarding's miniature of the chat does this.
+  var isModelSelectorHidden = false {
+    didSet {
+      guard isModelSelectorHidden != oldValue else { return }
+      modelButton.isHidden = isModelSelectorHidden
+      modelButtonLeadingConstraint?.isActive = !isModelSelectorHidden && showsHistorySlider
+    }
+  }
+
+  /// A narrow iPad composer leaves the history slider out of its row, and narrower still, undo and
+  /// redo, so the model keeps room.
+  private var showsHistorySlider = true
+  private var showsUndoRedo = true
+
   var maxTextHistoryPointer: Int {
     get { Int(textSlider.maximumValue.rounded()) }
     set {
@@ -95,6 +110,8 @@ final class ChatInputController {
   private var resizePhantomViewHeight: CGFloat?
   private var resizePhantomViewHeightLast: CGFloat = 0
   private var sendControlWidthConstraint: Constraint?
+  private var modelButtonLeadingConstraint: Constraint?
+  private var modelButtonLeadingToUndoRedoConstraint: Constraint?
   private var sendButtonWidthConstraint: Constraint?
   private var stopButtonWidthConstraint: Constraint?
   private var stopButtonLeadingToDividerConstraint: Constraint?
@@ -852,8 +869,8 @@ final class ChatInputController {
         make.height.equalTo(20)
       }
       modelButton.snp.makeConstraints { make in
-        make.leading.equalTo(attachButton.snp.trailing).offset(12)
-        make.trailing.lessThanOrEqualTo(dictationButton.snp.leading).offset(-12)
+        make.leading.greaterThanOrEqualTo(attachButton.snp.trailing).offset(8)
+        make.trailing.equalTo(dictationButton.snp.leading).offset(-8)
         make.centerY.equalTo(sendControlView)
         make.height.equalTo(36)
       }
@@ -892,10 +909,20 @@ final class ChatInputController {
       textSlider.snp.makeConstraints { make in
         make.centerY.equalTo(undoRedoOverlayView)
         make.leading.equalTo(undoRedoOverlayView.snp.trailing).offset(12)
-        make.width.greaterThanOrEqualTo(88)
+        make.width.greaterThanOrEqualTo(40)
+        // Without the model the slider runs on to dictation. Kept below the model button's low
+        // hugging and compression resistance, so it changes nothing while the model is there.
+        make.trailing.equalTo(dictationButton.snp.leading).offset(-12).priority(
+          .low.advanced(by: -1))
       }
       modelButton.snp.makeConstraints { make in
-        make.leading.equalTo(textSlider.snp.trailing).offset(12)
+        modelButtonLeadingConstraint =
+          make.leading.equalTo(textSlider.snp.trailing).offset(12).constraint
+        // Without the slider the model keeps to dictation and may take the slider's room, or with
+        // undo and redo gone too, theirs.
+        modelButtonLeadingToUndoRedoConstraint =
+          make.leading.greaterThanOrEqualTo(undoRedoOverlayView.snp.trailing).offset(12).constraint
+        make.leading.greaterThanOrEqualTo(attachButton.snp.trailing).offset(12)
         make.trailing.equalTo(dictationButton.snp.leading).offset(-12)
         make.centerY.equalTo(sendControlView)
         make.height.equalTo(32)
@@ -948,6 +975,28 @@ final class ChatInputController {
     attachmentController.setChatInputDropInteraction(on: view)
     attachmentController.setPasteDelegate(of: textView)
     updateSendControl(animated: false)
+  }
+
+  /// Fits the iPad's button row to a composer this wide. Besides the model, attachments, dictation
+  /// and send take 176pt; undo and redo take 89pt more, and the history slider at least 52pt more.
+  /// The model keeps at least 120pt before the slider goes, and then undo and redo.
+  func fitButtonRow(toWidth width: CGFloat) {
+    guard userInterfaceIdiom != .phone else { return }
+    let showsHistorySlider = width >= 176 + 89 + 52 + 120
+    let showsUndoRedo = width >= 176 + 89 + 120
+    if showsHistorySlider != self.showsHistorySlider {
+      self.showsHistorySlider = showsHistorySlider
+      textSlider.isHidden = !showsHistorySlider
+      modelButtonLeadingConstraint?.isActive = !isModelSelectorHidden && showsHistorySlider
+    }
+    if showsUndoRedo != self.showsUndoRedo {
+      self.showsUndoRedo = showsUndoRedo
+      undoButtonView.isHidden = !showsUndoRedo
+      redoButtonView.isHidden = !showsUndoRedo
+      undoRedoDivider.isHidden = !showsUndoRedo
+      undoRedoOverlayView.isHidden = !showsUndoRedo
+      modelButtonLeadingToUndoRedoConstraint?.isActive = showsUndoRedo
+    }
   }
 
   func setModel(name: String, image: UIImage) {

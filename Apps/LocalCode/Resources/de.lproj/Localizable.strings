@@ -756,6 +756,12 @@
 
 "code_font_detail" = "Ändert die Schrift für Code in Nachrichten, auch in der, die Sie gerade schreiben.";
 
+"chat_width" = "Chatbreite";
+
+"chat_width_detail" = "Ändert, wie breit der Chat in einem großen Fenster wird. „Breit“ gibt Code und Tabellen mehr Platz.";
+
+"wide" = "Breit";
+
 "system" = "System";
 
 "other_dot" = "Andere...";
@@ -2547,6 +2553,9 @@
 "new_chat" = "Neuer Chat";
 "focus_chat" = "Chat fokussieren";
 "stop_conversation" = "Unterhaltung stoppen";
+"zoom_in" = "Vergrößern";
+"zoom_out" = "Verkleinern";
+"actual_size" = "Originalgröße";
 
 "thread_completed_title" = "Arbeit abgeschlossen";
 
@@ -2691,6 +2700,13 @@
 "your_account_your_workspace_detail" = "Ihre Einstellungen und Ihr Arbeitsbereich bleiben auf allen Ihren Geräten synchron.";
 "you_are_all_set" = "Alles bereit!";
 "you_are_all_set_detail" = "Hier ist ein kurzer Überblick darüber, wie Local Code aufgebaut ist.";
+"choose_a_reading_style" = "Lesestil wählen";
+"choose_a_reading_style_detail" = "Legen Sie fest, wie Unterhaltungen dargestellt werden. Das lässt sich später unter „Maschineneinstellungen“ ändern.";
+"text_size" = "Textgröße";
+"smaller" = "Kleiner";
+"bigger" = "Größer";
+"rename_these_photos_by_date" = "Benenne diese Fotos nach Datum um.";
+"photos_renamed_by_date_detail" = "Ich habe jedes Foto nach seinem Aufnahmedatum umbenannt. Es wurde nichts gelöscht.";
 "threads" = "Threads";
 "onboarding_workspace_detail" = "Der Arbeitsbereich ist das Verzeichnis, in dem Local Code lesen und schreiben darf. „In App-Dokumente“ hält alles beisammen; „Lokal“ gewährt Zugriff auf Ihren gesamten Mac. Legen Sie ihn pro Projekt fest.";
 "onboarding_workspace_bot_detail" = "Der Arbeitsbereich ist das Verzeichnis, in dem Local Code lesen und schreiben darf. „In App-Dokumente“ hält alles beisammen; „Lokal“ gewährt Zugriff auf Ihren gesamten Mac. Legen Sie ihn pro Bot fest.";
@@ -2881,7 +2897,7 @@
 "serve_limits_detail" = "Anfragen laufen nacheinander, da die Modelle noch nicht bündeln können. Bis zu 128 weitere warten, und ein laufender Chat hat immer Vorrang. Zwischen Anfragen wird nichts gespeichert, daher sendet jede die gesamte Unterhaltung. Bilder werden noch nicht unterstützt.";
 "port_x_is_in_use" = "Port %@ wird von einer anderen App verwendet";
 
-"local_model_not_on_phone" = "Dieses Modell ist nicht auf diesem iPhone, und iPhones laden keine lokalen Modelle herunter. Wählen Sie ein anderes Modell.";
+"local_model_not_on_phone" = "Dieses Modell ist nicht auf diesem iPhone und zu groß, um es hier herunterzuladen. Wählen Sie ein anderes Modell.";
 
 "turn_finished_detail" = "„%@“ ist fertig.";
 "paired_with_local_code_detail" = "Mit Local Code auf diesem Gerät gekoppelt. Senden Sie /help, um zu sehen, was es kann.";

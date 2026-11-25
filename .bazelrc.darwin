@@ -6,6 +6,7 @@ common --disk_cache=~/.cache/bazel
 
 build --cxxopt='-std=c++17'
 build --config=mps
+build --workspace_status_command=Scripts/pico_build_info.py
 
 build --features=swift.use_global_module_cache
 build --strategy=SwiftCompile=worker

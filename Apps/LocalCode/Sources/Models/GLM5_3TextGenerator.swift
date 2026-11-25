@@ -657,8 +657,10 @@ public struct GLM5_3TextGenerator: TextGenerator {
         GLM5_3ResidentMappingSize(checkpoint: filePath, configuration: streamingConfiguration))
       defer { DynamicGraph.setWholeFileMappingSizeLimit(0) }
       let result = try? graph.openStore(filePath, flags: .readOnly) { store in
-        let codec: DynamicGraph.Store.Codec = [.jit, .i8x, .ezm7, .externalData(.wholeFile)]
-        try store.read("text_model", model: model, strict: true, codec: codec) {
+        try store.read(
+          "text_model", model: model, strict: true,
+          codec: [.jit, .i8x, .ezm7, .externalData(.wholeFile)]
+        ) {
           name, _, _, _ in
           // Streaming layers read their expert banks on demand; MoEWeightStreaming loads experts from
           // the file.
@@ -829,88 +831,91 @@ public struct GLM5_3TextGenerator: TextGenerator {
     let prefillStartTime = CACurrentMediaTime()
     let initialPrefillDuration = recentInteractionStatistics[statisticsIndex].prefillDurationSoFar
     while chunkStart < tokenLength {
-      let position = tokenOffset + chunkStart
-      var end = position + chunkLength(start: chunkStart)
-      encodeImages(overlapping: position..<end)
-      // A chunk holds at most one image, with text rows before and after it, the order
-      // GLM5_3Embedding takes, so it ends where the next image starts. Unavailable images stay
-      // text rows.
-      let images = embedSpans.filter {
-        Int($0.start) < end && Int($0.end) > position && encodedImages[$0.digest] != nil
-      }.sorted { $0.start < $1.start }
-      if images.count > 1 { end = Int(images[1].start) }
-      var textEnd = end
-      var postStart = end
-      var injected = emptyInjected
-      if let span = images.first, let embeddings = encodedImages[span.digest] {
-        textEnd = max(position, Int(span.start))
-        postStart = min(end, Int(span.end))
-        injected = embeddings.reshaped(
-          .WC(postStart - textEnd, configuration.hiddenSize),
-          offset: [textEnd - Int(span.start), 0], strides: [configuration.hiddenSize, 1]
-        ).copied()
-      }
-      if embedSpans.contains(where: {
-        Int($0.start) < end && Int($0.end) > position && unavailableImages.contains($0.digest)
-      }) {
-        kvCache.hasPaddedImages = true
-      }
-      if images.isEmpty && shouldCompilePrefill {
-        graph.joined()
-        compilePrefill(isEager: true)
-        shouldCompilePrefill = false
-      }
-      let length = end - position
-      let flags = DynamicGraph.flags
-      // Partial chunks would otherwise specialize every GEMM on a new M.
-      if length != min(chunkedPrefillMaxLength, capacity - 1) {
-        DynamicGraph.flags.insert(.disableMFAGEMMSpecializingM)
-      }
-      let textTokens =
-        textEnd > position
-        ? tokens.reshaped(
-          format: .NHWC, shape: [textEnd - position], offset: [chunkStart], strides: [1]
-        ).copied() : emptyTokens
-      let postTokens =
-        postStart < end
-        ? tokens.reshaped(
-          format: .NHWC, shape: [end - postStart], offset: [postStart - tokenOffset],
-          strides: [1]
-        ).copied() : emptyTokens
-      // A rebuilt graph keeps its outputs, so a drafting load always outputs target rows.
-      let targetRows = drafting ? end - max(position, firstTarget) : 0
-      let outputs = model(
-        (cached: position, count: length, logits: 1, targets: drafting ? max(1, targetRows) : 0),
-        inputs: textTokens,
-        [injected, postTokens] + Self.cacheInputs(kvCache, cached: position, count: length))
-      DynamicGraph.flags = flags
-      if !images.isEmpty {
-        shouldCompilePrefill = true
-      }
-      Self.keepStates(&kvCache)
-      if targetRows > 0 {
-        extendDraftData(
-          outputs[1].as(of: Float.self).copied(), rows: targetRows, first: end - targetRows)
-      }
-      kvCache.tokenLength = position + length
-      chunkStart += length
-      if chunkStart == tokenLength {
-        pendingToken = forcingThinkingEnd(select(outputs[0].as(of: Float16.self)))
-        if shouldCompilePrefill {
+      // Each chunk drains what it autoreleases too.
+      autoreleasepool {
+        let position = tokenOffset + chunkStart
+        var end = position + chunkLength(start: chunkStart)
+        encodeImages(overlapping: position..<end)
+        // A chunk holds at most one image, with text rows before and after it, the order
+        // GLM5_3Embedding takes, so it ends where the next image starts. Unavailable images stay
+        // text rows.
+        let images = embedSpans.filter {
+          Int($0.start) < end && Int($0.end) > position && encodedImages[$0.digest] != nil
+        }.sorted { $0.start < $1.start }
+        if images.count > 1 { end = Int(images[1].start) }
+        var textEnd = end
+        var postStart = end
+        var injected = emptyInjected
+        if let span = images.first, let embeddings = encodedImages[span.digest] {
+          textEnd = max(position, Int(span.start))
+          postStart = min(end, Int(span.end))
+          injected = embeddings.reshaped(
+            .WC(postStart - textEnd, configuration.hiddenSize),
+            offset: [textEnd - Int(span.start), 0], strides: [configuration.hiddenSize, 1]
+          ).copied()
+        }
+        if embedSpans.contains(where: {
+          Int($0.start) < end && Int($0.end) > position && unavailableImages.contains($0.digest)
+        }) {
+          kvCache.hasPaddedImages = true
+        }
+        if images.isEmpty && shouldCompilePrefill {
           graph.joined()
           compilePrefill(isEager: true)
           shouldCompilePrefill = false
         }
+        let length = end - position
+        let flags = DynamicGraph.flags
+        // Partial chunks would otherwise specialize every GEMM on a new M.
+        if length != min(chunkedPrefillMaxLength, capacity - 1) {
+          DynamicGraph.flags.insert(.disableMFAGEMMSpecializingM)
+        }
+        let textTokens =
+          textEnd > position
+          ? tokens.reshaped(
+            format: .NHWC, shape: [textEnd - position], offset: [chunkStart], strides: [1]
+          ).copied() : emptyTokens
+        let postTokens =
+          postStart < end
+          ? tokens.reshaped(
+            format: .NHWC, shape: [end - postStart], offset: [postStart - tokenOffset],
+            strides: [1]
+          ).copied() : emptyTokens
+        // A rebuilt graph keeps its outputs, so a drafting load always outputs target rows.
+        let targetRows = drafting ? end - max(position, firstTarget) : 0
+        let outputs = model(
+          (cached: position, count: length, logits: 1, targets: drafting ? max(1, targetRows) : 0),
+          inputs: textTokens,
+          [injected, postTokens] + Self.cacheInputs(kvCache, cached: position, count: length))
+        DynamicGraph.flags = flags
+        if !images.isEmpty {
+          shouldCompilePrefill = true
+        }
+        Self.keepStates(&kvCache)
+        if targetRows > 0 {
+          extendDraftData(
+            outputs[1].as(of: Float.self).copied(), rows: targetRows, first: end - targetRows)
+        }
+        kvCache.tokenLength = position + length
+        chunkStart += length
+        if chunkStart == tokenLength {
+          pendingToken = forcingThinkingEnd(select(outputs[0].as(of: Float16.self)))
+          if shouldCompilePrefill {
+            graph.joined()
+            compilePrefill(isEager: true)
+            shouldCompilePrefill = false
+          }
+        }
+        if !kvCache.hasPaddedImages, kvCache.tokenLength.isMultiple(of: checkpointStride) {
+          contextCache.save(
+            graph: graph, tokens: contextTokens, checkpointLength: kvCache.tokenLength,
+            configuration: configuration, kvCache: kvCache, hasher: &hasher,
+            embeddingSpans: embedSpans)
+        }
+        recentInteractionStatistics[statisticsIndex].prefillDurationSoFar =
+          Float(CACurrentMediaTime() - prefillStartTime) + initialPrefillDuration
+        recentInteractionStatistics[statisticsIndex].prefillTokensSoFar += length
       }
-      if !kvCache.hasPaddedImages, kvCache.tokenLength.isMultiple(of: checkpointStride) {
-        contextCache.save(
-          graph: graph, tokens: contextTokens, checkpointLength: kvCache.tokenLength,
-          configuration: configuration, kvCache: kvCache, hasher: &hasher,
-          embeddingSpans: embedSpans)
-      }
-      recentInteractionStatistics[statisticsIndex].prefillDurationSoFar =
-        Float(CACurrentMediaTime() - prefillStartTime) + initialPrefillDuration
-      recentInteractionStatistics[statisticsIndex].prefillTokensSoFar += length
       switch continuationHandler(chunkStart, tokenLength, [], statistics) {
       case .continue:
         break
@@ -958,14 +963,9 @@ public struct GLM5_3TextGenerator: TextGenerator {
       // drafter's history start every step opens a new first row, so only the rest are kept.
       var draftMasks = [[Int]: DynamicGraph.Tensor<Float16>]()
       let maskTokens = Array(repeating: draft.maskTokenID, count: draft.proposals)
-      // Tensor.toGPU waits for the GPU; these copies run on the stream instead, and their CPU
-      // sources live until the next join.
-      var uploads = [DynamicGraph.AnyTensor]()
-      func upload<E: TensorNumeric>(_ tensor: Tensor<E>) -> DynamicGraph.Tensor<E> {
-        let source = graph.variable(tensor)
-        uploads.append(source)
-        return source.toGPU(0)
-      }
+      // Tensor.toGPU waits for the GPU, so copies to it run on the stream instead, from CPU
+      // tensors kept here until the join after them.
+      var tensorsToGPU = [DynamicGraph.AnyTensor]()
       // The drafter's rotary rows, built when a draft would run past them.
       var rotaryStart = 0
       var rotary: DynamicGraph.Tensor<Float16>?
@@ -973,9 +973,11 @@ public struct GLM5_3TextGenerator: TextGenerator {
         if rotary.map({ first < rotaryStart || first + count > rotaryStart + $0.shape[0] }) ?? true
         {
           rotaryStart = first
-          rotary = upload(
+          let rotarySource = graph.variable(
             GLM5_3DFlash2RotaryEmbedding(
               rows: max(8_192, count), firstPosition: first, draft: draft, of: Float16.self))
+          tensorsToGPU.append(rotarySource)
+          rotary = rotarySource.toGPU(0)
         }
         return rotary![(first - rotaryStart)..<(first - rotaryStart + count), 0..<draft.headDim]
           .copied()
@@ -1064,16 +1066,19 @@ public struct GLM5_3TextGenerator: TextGenerator {
                   values[row * viewRows + column] = -Float16.greatestFiniteMagnitude
                 }
               }
-              mask = upload(
+              let maskSource = graph.variable(
                 Tensor(values, kind: .CPU, format: .NHWC, shape: [1, 1, block, viewRows]))
+              tensorsToGPU.append(maskSource)
+              mask = maskSource.toGPU(0)
               if open == draftData.rows { draftMasks[maskKey] = mask }
             }
+            let blockTokens = graph.variable(
+              Tensor<Int32>([nextToken] + maskTokens, kind: .CPU, format: .NHWC, shape: [block]))
+            tensorsToGPU.append(blockTokens)
             let draftInputs: [DynamicGraph.AnyTensor] =
               [
                 draftData.targets, rotaryRows(first: draftData.first, count: mainRows),
-                upload(
-                  Tensor<Int32>([nextToken] + maskTokens, kind: .CPU, format: .NHWC, shape: [block])
-                ), rotaryRows(first: position, count: block), mask,
+                blockTokens.toGPU(0), rotaryRows(first: position, count: block), mask,
               ] + Self.draftCacheInputs(kvCache)
             // The last verify built the graph for this draft, unless it is the first.
             if drafterKey.map({ $0 != (mainRows, temperature, base) }) ?? true {
@@ -1114,8 +1119,8 @@ public struct GLM5_3TextGenerator: TextGenerator {
                 draftOutputs[3].as(of: Int32.self).toCPU()
               )
             }
-            confidence.joined()
-            uploads = []
+            withExtendedLifetime(tensorsToGPU) { confidence.joined() }
+            tensorsToGPU = []
             draftMilliseconds =
               0.8 * draftMilliseconds
               + 0.2
@@ -1180,8 +1185,10 @@ public struct GLM5_3TextGenerator: TextGenerator {
             prepared = nil
           }
           let ids = [nextToken] + draftTokens.prefix(rows - 1)
-          let tokenTensor = upload(
+          let tokenSource = graph.variable(
             Tensor<Int32>(ids, kind: .CPU, format: .NHWC, shape: [rows]))
+          tensorsToGPU.append(tokenSource)
+          let tokenTensor = tokenSource.toGPU(0)
           let verifyKey = (cached: position, count: rows, logits: rows, targets: rows)
           let verifyInputs = Self.cacheInputs(kvCache, cached: position, count: rows, logits: rows)
           if prepared != rows {
@@ -1250,18 +1257,20 @@ public struct GLM5_3TextGenerator: TextGenerator {
                 DynamicGraph.Tensor<Float>(from: logits).reshaped(
                   .WC(drafts, vocabularySize), offset: [0, 0], strides: [vocabularySize, 1])
                   * (1 / sampling.temperature))
-              let index = upload(
+              let indexSource = graph.variable(
                 Tensor<Int32>(
                   (0..<drafts).map { Int32($0 * vocabularySize) + draftTokens[$0] }, kind: .CPU,
                   format: .NHWC, shape: [drafts]))
+              let probabilitySource = graph.variable(
+                Tensor<Float>(
+                  candidateProbabilities, kind: .CPU, format: .NHWC, shape: [drafts * count, 1]))
+              let candidateSource = graph.variable(
+                Tensor<Int32>(candidateIndices, kind: .CPU, format: .NHWC, shape: [drafts * count]))
+              tensorsToGPU += [indexSource, probabilitySource, candidateSource]
+              let index = indexSource.toGPU(0)
               let q = Functional.scatterAdd(
-                count: drafts * vocabularySize,
-                input: upload(
-                  Tensor<Float>(
-                    candidateProbabilities, kind: .CPU, format: .NHWC, shape: [drafts * count, 1])),
-                index: upload(
-                  Tensor<Int32>(
-                    candidateIndices, kind: .CPU, format: .NHWC, shape: [drafts * count]))
+                count: drafts * vocabularySize, input: probabilitySource.toGPU(0),
+                index: candidateSource.toGPU(0)
               ).reshaped(.WC(drafts, vocabularySize))
               let uniform = graph.variable(.GPU(0), format: .NHWC, shape: [drafts], of: Float.self)
               uniform.rand(0...1)
@@ -1280,8 +1289,8 @@ public struct GLM5_3TextGenerator: TextGenerator {
                 .WC(1, vocabularySize), offset: [rows - 1, 0], strides: [vocabularySize, 1]),
               axis: 1, scale: sampling.temperature
             ).reshaped(format: .NHWC, shape: [1]).toCPU()
-            bonus.joined()
-            uploads = []
+            withExtendedLifetime(tensorsToGPU) { bonus.joined() }
+            tensorsToGPU = []
             if let acceptance {
               // Picks reproduce the kept drafts, then the corrected or bonus token after them.
               for index in draftTokens.indices {
@@ -1304,8 +1313,8 @@ public struct GLM5_3TextGenerator: TextGenerator {
             let selected = Functional.argmax(logits, axis: 1).reshaped(
               format: .NHWC, shape: [rows]
             ).toCPU()
-            selected.joined()
-            uploads = []
+            withExtendedLifetime(tensorsToGPU) { selected.joined() }
+            tensorsToGPU = []
             picks = (0..<rows).map { selected[$0] }
           }
           // Up to the picks, so the caller's time below stays out of the estimate.
@@ -1395,52 +1404,60 @@ public struct GLM5_3TextGenerator: TextGenerator {
     // building the next step overlaps the GPU running the current one.
     compileDecode()
     while kvCache.tokenLength < Self.maximumContextLength {
-      let position = kvCache.tokenLength
-      if position + 1 > capacity {
-        graph.joined()
-        capacity = Self.cacheCapacity(for: position + 1)
-        Self.resizeCaches(
-          graph: graph, kvCache: &kvCache, capacity: capacity, configuration: configuration)
-        compileDecode()
+      var result: [Int32]?
+      // Each step drains what it autoreleases, Metal command buffers among them: a long reply would
+      // otherwise hold all of them until the call returns.
+      autoreleasepool {
+        let position = kvCache.tokenLength
+        if position + 1 > capacity {
+          graph.joined()
+          capacity = Self.cacheCapacity(for: position + 1)
+          Self.resizeCaches(
+            graph: graph, kvCache: &kvCache, capacity: capacity, configuration: configuration)
+          compileDecode()
+        }
+        let pending = pendingToken.toCPU()
+        let outputs = model(
+          (cached: position, count: 1, logits: 1, targets: 0), inputs: pendingToken,
+          [emptyInjected, emptyTokens] + Self.cacheInputs(kvCache, cached: position, count: 1))
+        Self.keepStates(&kvCache)
+        kvCache.tokenLength = position + 1
+        let token = pending[0]
+        if token == Self.thinkEndToken || token == Self.toolCallStartToken {
+          thinkingEnded = true
+        } else if !thinkingEnded {
+          thinkingTokenCount += 1
+        }
+        pendingToken = forcingThinkingEnd(select(outputs[0].as(of: Float16.self)))
+        generated.append(token)
+        runningContextTokens.append(token)
+        if !kvCache.hasPaddedImages, kvCache.tokenLength.isMultiple(of: checkpointStride) {
+          contextCache.save(
+            graph: graph, tokens: runningContextTokens, checkpointLength: kvCache.tokenLength,
+            configuration: configuration, kvCache: kvCache, hasher: &hasher,
+            embeddingSpans: embedSpans)
+        }
+        recentInteractionStatistics[statisticsIndex].tokenGeneratedSoFar += 1
+        recentInteractionStatistics[statisticsIndex].decodeStepsSoFar += 1
+        recentInteractionStatistics[statisticsIndex].tokenGenerationDurationSoFar =
+          Float(CACurrentMediaTime() - decodeStartTime) + initialDecodeDuration
+        if Self.stopTokens.contains(token) {
+          graph.joined()
+          result = generated
+          return
+        }
+        switch continuationHandler(kvCache.tokenLength, kvCache.tokenLength, generated, statistics)
+        {
+        case .continue:
+          break
+        case .pause:
+          result = generated + [pendingToken.toCPU()[0]]
+        case .abort:
+          graph.joined()
+          result = generated
+        }
       }
-      let pending = pendingToken.toCPU()
-      let outputs = model(
-        (cached: position, count: 1, logits: 1, targets: 0), inputs: pendingToken,
-        [emptyInjected, emptyTokens] + Self.cacheInputs(kvCache, cached: position, count: 1))
-      Self.keepStates(&kvCache)
-      kvCache.tokenLength = position + 1
-      let token = pending[0]
-      if token == Self.thinkEndToken || token == Self.toolCallStartToken {
-        thinkingEnded = true
-      } else if !thinkingEnded {
-        thinkingTokenCount += 1
-      }
-      pendingToken = forcingThinkingEnd(select(outputs[0].as(of: Float16.self)))
-      generated.append(token)
-      runningContextTokens.append(token)
-      if !kvCache.hasPaddedImages, kvCache.tokenLength.isMultiple(of: checkpointStride) {
-        contextCache.save(
-          graph: graph, tokens: runningContextTokens, checkpointLength: kvCache.tokenLength,
-          configuration: configuration, kvCache: kvCache, hasher: &hasher,
-          embeddingSpans: embedSpans)
-      }
-      recentInteractionStatistics[statisticsIndex].tokenGeneratedSoFar += 1
-      recentInteractionStatistics[statisticsIndex].decodeStepsSoFar += 1
-      recentInteractionStatistics[statisticsIndex].tokenGenerationDurationSoFar =
-        Float(CACurrentMediaTime() - decodeStartTime) + initialDecodeDuration
-      if Self.stopTokens.contains(token) {
-        graph.joined()
-        return generated
-      }
-      switch continuationHandler(kvCache.tokenLength, kvCache.tokenLength, generated, statistics) {
-      case .continue:
-        break
-      case .pause:
-        return generated + [pendingToken.toCPU()[0]]
-      case .abort:
-        graph.joined()
-        return generated
-      }
+      if let result { return result }
     }
     // The context is full: the last prediction stays pending.
     return generated + [pendingToken.toCPU()[0]]

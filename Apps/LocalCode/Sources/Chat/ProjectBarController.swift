@@ -20,10 +20,65 @@ final class ProjectBarController {
       configuration.title = projectName ?? LocalizedString.forKey("projects")
       projectButton.configuration = configuration
       newChatButton.isEnabled = projectName != nil
+      if userInterfaceIdiom == .phone {
+        newChatBarButtonItem.isEnabled = projectName != nil
+      }
     }
   }
 
+  /// An iPhone Duo has a bar down its side. The phone layout puts settings and new chat there, as
+  /// the two bar button items below. The two buttons here then go away and the project button has
+  /// the bar to itself.
+  var showsButtonsInVerticalBar = false {
+    didSet {
+      guard showsButtonsInVerticalBar != oldValue else { return }
+      settingsButton.alpha = showsButtonsInVerticalBar ? 0 : 1
+      newChatButton.alpha = showsButtonsInVerticalBar ? 0 : 1
+      projectButtonLeadingToSettingsConstraint?.isActive = !showsButtonsInVerticalBar
+      projectButtonTrailingToNewChatConstraint?.isActive = !showsButtonsInVerticalBar
+    }
+  }
+
+  /// An iPad window too narrow for settings beside the chat has the settings button ahead of the
+  /// project button, to slide settings in. The phone layout always shows it.
+  var showsSettingsButton = false {
+    didSet {
+      guard showsSettingsButton != oldValue, userInterfaceIdiom != .phone else { return }
+      settingsButton.isHidden = !showsSettingsButton
+      // Fades while the stack view opens or closes its slot, so the icon does not show past the
+      // project button.
+      settingsButton.alpha = showsSettingsButton ? 1 : 0
+    }
+  }
+
+  private(set) lazy var settingsBarButtonItem: UIBarButtonItem = {
+    let item = UIBarButtonItem(
+      title: LocalizedString.forKey("settings"),
+      image: #imageLiteral(resourceName: "hamburger").withRenderingMode(.alwaysTemplate),
+      primaryAction: UIAction { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.projectBarControllerDidTapSettings(self)
+      })
+    item.tintColor = .primaryText
+    return item
+  }()
+
+  private(set) lazy var newChatBarButtonItem: UIBarButtonItem = {
+    let item = UIBarButtonItem(
+      title: LocalizedString.forKey("new_chat"),
+      image: #imageLiteral(resourceName: "chat-new-24").withRenderingMode(.alwaysTemplate),
+      primaryAction: UIAction { [weak self] _ in
+        guard let self else { return }
+        self.delegate?.projectBarControllerDidTapNewChat(self)
+      })
+    item.tintColor = .primaryText
+    item.isEnabled = projectName != nil
+    return item
+  }()
+
   private let userInterfaceIdiom: UIUserInterfaceIdiom
+  private var projectButtonLeadingToSettingsConstraint: Constraint?
+  private var projectButtonTrailingToNewChatConstraint: Constraint?
 
   private lazy var settingsButton: UIButton = {
     let button = UIButton(type: .custom)
@@ -158,14 +213,27 @@ final class ProjectBarController {
       projectButton.snp.makeConstraints { make in
         make.center.equalToSuperview()
         make.height.equalTo(52)
-        make.leading.greaterThanOrEqualTo(settingsButton.snp.trailing).offset(12)
-        make.trailing.lessThanOrEqualTo(newChatButton.snp.leading).offset(-12)
+        make.leading.greaterThanOrEqualToSuperview()
+        make.trailing.lessThanOrEqualToSuperview()
+        projectButtonLeadingToSettingsConstraint =
+          make.leading.greaterThanOrEqualTo(settingsButton.snp.trailing).offset(12).constraint
+        projectButtonTrailingToNewChatConstraint =
+          make.trailing.lessThanOrEqualTo(newChatButton.snp.leading).offset(-12).constraint
       }
       return
     }
+    settingsButton.isHidden = !showsSettingsButton
+    settingsButton.alpha = showsSettingsButton ? 1 : 0
+    stackView.addArrangedSubview(settingsButton)
+    stackView.setCustomSpacing(12, after: settingsButton)
     stackView.addArrangedSubview(projectButton)
     stackView.setCustomSpacing(12, after: projectButton)
     stackView.addArrangedSubview(newChatButton)
+    settingsButton.snp.makeConstraints { make in
+      make.height.equalTo(52)
+      // Hidden, the stack view collapses it to no width.
+      make.width.equalTo(52).priority(.required.advanced(by: -1))
+    }
     newChatButton.snp.makeConstraints { make in
       make.width.height.equalTo(52)
     }
